@@ -1,12 +1,17 @@
 # A homed printer changes to T1 (pickup only, since no tool is known
 # mounted), then back to T0 (dropoff of T1, then pickup of T0). Both changes
-# run the dock motion templates and ACTIVATE_EXTRUDER without error.
+# run the change hook templates, the dock motion templates and
+# ACTIVATE_EXTRUDER, T1's heater target starts a temperature wait, and T1's
+# gcode offset lands in the gcode origin and is removed again for T0.
 CONFIG printer.cfg
 DICTIONARY linuxprocess.dict
 
 G28
+M104 T1 S60
 T1
+GET_POSITION
 HOTENDCHANGER_STATUS
 T0
+GET_POSITION
 HOTENDCHANGER_STATUS
 M400

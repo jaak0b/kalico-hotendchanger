@@ -4,7 +4,8 @@
 #
 # Usage: ./install.sh [KALICO_DIR]
 # KALICO_DIR can also be given via the KALICO_DIR environment variable.
-# Defaults to $HOME/klipper, the documented clone location.
+# Defaults to $HOME/klipper, the usual location of the checkout the klippy
+# service runs from.
 
 set -e
 
@@ -50,6 +51,16 @@ if [ ! -d "$INSTALL_DIR" ]; then
         exit 1
     }
     echo "install.sh: created $INSTALL_DIR"
+fi
+
+# klippy imports plugins as submodules of the klippy.plugins package, so the
+# directory needs a package marker.
+if [ ! -f "$INSTALL_DIR/__init__.py" ]; then
+    : > "$INSTALL_DIR/__init__.py" || {
+        echo "install.sh: failed to create $INSTALL_DIR/__init__.py" >&2
+        exit 1
+    }
+    echo "install.sh: created $INSTALL_DIR/__init__.py"
 fi
 
 for f in $PLUGIN_FILES; do

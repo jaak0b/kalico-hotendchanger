@@ -1,0 +1,6 @@
+# Config load must fail naming the T1 command collision.
+CONFIG macro_collision.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+M115

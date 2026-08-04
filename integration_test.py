@@ -12,7 +12,11 @@ import tempfile
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent
-PLUGIN_SRC = REPO_DIR / 'hotendchanger.py'
+# Both modules must be staged together: Kalico resolves [hotendchanger_tool]
+# sections to the module of that name, so staging only hotendchanger.py
+# leaves the tool sections unclaimed and config load fails.
+PLUGIN_MODULES = ('hotendchanger.py', 'hotendchanger_tool.py')
+PLUGIN_SRCS = tuple(REPO_DIR / name for name in PLUGIN_MODULES)
 CASE_DIR = REPO_DIR / 'integration'
 
 # The linuxprocess target builds with the host compiler, so no
@@ -41,6 +45,7 @@ FORBIDDEN_ALWAYS = (
     'Traceback (most recent call last)',
     'Unhandled exception',
     'Internal error',
+    'hotendchanger internal error',
 )
 
 # klippy/util.py (_try_read_file): the startup probe of
@@ -73,7 +78,13 @@ def strip_benign_traceback(output):
 # config load. The gcode of a case runs only after it.
 CONNECTED = "Sending MCU 'mcu' printer configuration..."
 
-NOT_HOMED = 'tool change requires XYZ homed'
+NOT_HOMED = 'Home all axes with G28 before a tool change'
+
+# A config-error case fails during connect; klippy logs that error with a
+# traceback (klippy/printer.py logging.exception in _connect), so those
+# cases list the traceback marker under 'allow' instead of tripping
+# FORBIDDEN_ALWAYS.
+CONFIG_ERROR_TRACEBACK = ('Traceback (most recent call last)',)
 
 CASES = (
     {
@@ -85,7 +96,20 @@ CASES = (
     {
         'name': 'toolchange',
         'test': 'toolchange.test',
-        'require': ('active_tool: T1', 'active_tool: T0'),
+        'require': (
+            'active_tool: T1',
+            'active_tool: T0',
+            'hotendchanger before: old=none new=T1',
+            'hotendchanger after: old=T1 new=T0',
+            'Activating extruder extruder1',
+            # The trailing newline keeps this marker from matching inside
+            # the extruder1 line above.
+            'Activating extruder extruder\n',
+            'hotendchanger: waiting for extruder1 to reach 60.0C'
+            ' (within 2.0C)',
+            'gcode homing: X:0.400000 Y:0.200000 Z:-0.050000',
+            'gcode homing: X:0.000000 Y:0.000000 Z:0.000000',
+        ),
         'forbid': ('Unknown command:"T1"', 'Unknown command:"T0"'),
     },
     {
@@ -97,7 +121,11 @@ CASES = (
     {
         'name': 'SET_TOOL_OFFSET',
         'test': 'set_tool_offset.test',
-        'require': ('T1 offset: X=0.100000',),
+        'require': (
+            'T1 offset: X=0.100000 Y=0.000000 Z=0.000000',
+            'T1 offset stored for SAVE_CONFIG',
+            'gcode homing: X:0.100000 Y:0.000000 Z:0.000000',
+        ),
         'forbid': ('Unknown command:"SET_TOOL_OFFSET"',),
     },
     {
@@ -105,6 +133,44 @@ CASES = (
         'test': 'set_tool_offset_bad_tool.test',
         'require': ('no hotendchanger_tool T9 configured',),
         'forbid': ('Unknown command:"SET_TOOL_OFFSET"',),
+    },
+    {
+        'name': 'bad tool numbering',
+        'test': 'bad_numbering.test',
+        'require': ('must be numbered T0..T1',),
+        'forbid': (),
+        'allow': CONFIG_ERROR_TRACEBACK,
+    },
+    {
+        'name': 'missing extruder section',
+        'test': 'missing_extruder.test',
+        'require': ("names extruder section 'extruder9' which does not exist",),
+        'forbid': (),
+        'allow': CONFIG_ERROR_TRACEBACK,
+    },
+    {
+        'name': 'gcode_macro collision',
+        'test': 'macro_collision.test',
+        'require': (
+            'cannot register gcode command T1 for [hotendchanger_tool T1]',),
+        'forbid': (),
+        'allow': CONFIG_ERROR_TRACEBACK,
+    },
+    {
+        'name': 'mixed detect_pin',
+        'test': 'mixed_detect.test',
+        'require': (
+            'either every hotendchanger_tool must set detect_pin or none may;'
+            ' missing on: T0',),
+        'forbid': (),
+        'allow': CONFIG_ERROR_TRACEBACK,
+    },
+    {
+        'name': 'duplicate extruder',
+        'test': 'duplicate_extruder.test',
+        'require': ("both name extruder section 'extruder'",),
+        'forbid': (),
+        'allow': CONFIG_ERROR_TRACEBACK,
     },
 )
 
@@ -217,13 +283,13 @@ def build_chelper(checkout, env):
             % (e, sys.executable))
 
 
-def link_plugin(target):
+def link_plugin(source, target):
     try:
-        os.symlink(str(PLUGIN_SRC), str(target))
+        os.symlink(str(source), str(target))
         return 'symlink'
     except OSError as symlink_error:
         try:
-            shutil.copyfile(str(PLUGIN_SRC), str(target))
+            shutil.copyfile(str(source), str(target))
         except OSError as copy_error:
             raise Failure(
                 "Could not install the plugin at %s. The symlink failed with "
@@ -235,39 +301,40 @@ def link_plugin(target):
 @contextlib.contextmanager
 def installed_plugin(checkout):
     plugins_dir = checkout.joinpath(*INSTALL_DIR)
-    target = plugins_dir / PLUGIN_SRC.name
     package_marker = plugins_dir / '__init__.py'
     created_dir = created_marker = False
-    backup = None
     if not plugins_dir.is_dir():
         plugins_dir.mkdir(parents=True)
         created_dir = True
     if not package_marker.exists():
         package_marker.touch()
         created_marker = True
-    already_installed = False
-    if target.is_symlink() or target.exists():
-        if target.resolve() == PLUGIN_SRC:
-            already_installed = True
-        else:
-            backup = plugins_dir / (target.name + '.integration-backup')
-            if backup.exists():
-                raise Failure(
-                    "%s already exists. A previous run left it behind: move "
-                    "the file you want to keep back to %s and delete the "
-                    "other one." % (backup, target))
-            os.replace(str(target), str(backup))
+    installed = []
+    backups = []
     try:
-        if already_installed:
-            report('plugin: already installed at %s' % (target,))
-        else:
+        for source in PLUGIN_SRCS:
+            target = plugins_dir / source.name
+            if target.is_symlink() or target.exists():
+                if target.resolve() == source:
+                    report('plugin: already installed at %s' % (target,))
+                    continue
+                backup = plugins_dir / (target.name + '.integration-backup')
+                if backup.exists():
+                    raise Failure(
+                        "%s already exists. A previous run left it behind: "
+                        "move the file you want to keep back to %s and "
+                        "delete the other one." % (backup, target))
+                os.replace(str(target), str(backup))
+                backups.append((backup, target))
             report('plugin: installed at %s by %s'
-                   % (target, link_plugin(target)))
+                   % (target, link_plugin(source, target)))
+            installed.append(target)
         yield
     finally:
-        if not already_installed and (target.is_symlink() or target.exists()):
-            target.unlink()
-        if backup is not None:
+        for target in installed:
+            if target.is_symlink() or target.exists():
+                target.unlink()
+        for backup, target in backups:
             os.replace(str(backup), str(target))
         cache = plugins_dir / '__pycache__'
         if cache.is_dir():
@@ -310,8 +377,8 @@ def stage_cases(scratch):
     for case in CASES:
         shutil.copyfile(str(CASE_DIR / case['test']),
                         str(staged / case['test']))
-    shutil.copyfile(str(CASE_DIR / 'printer.cfg'),
-                    str(staged / 'printer.cfg'))
+    for config in sorted(CASE_DIR.glob('*.cfg')):
+        shutil.copyfile(str(config), str(staged / config.name))
     return staged
 
 
@@ -346,7 +413,10 @@ def run_case(case, checkout, staged, dictdir, workdir, env):
     for marker in case['require']:
         if marker not in output:
             problems.append("the expected output %r never appeared" % (marker,))
-    for marker in tuple(case['forbid']) + FORBIDDEN_ALWAYS:
+    allowed = tuple(case.get('allow', ()))
+    forbidden = tuple(case['forbid']) + tuple(
+        m for m in FORBIDDEN_ALWAYS if m not in allowed)
+    for marker in forbidden:
         if marker in checked:
             problems.append("the output %r appeared" % (marker,))
     return problems, output
@@ -399,10 +469,11 @@ def main():
             "klippy runs on POSIX hosts only: it needs fork and the termios "
             "module. Run this script on the printer host, or in a Linux "
             "virtual machine or container with the Kalico checkout mounted.")
-    if not PLUGIN_SRC.is_file():
-        raise Failure(
-            "cannot find %s. Run this script from its own repository."
-            % (PLUGIN_SRC,))
+    for source in PLUGIN_SRCS:
+        if not source.is_file():
+            raise Failure(
+                "cannot find %s. Run this script from its own repository."
+                % (source,))
 
     checkout = check_checkout(args.checkout)
     report('firmware checkout: %s' % (checkout,))

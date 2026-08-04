@@ -1,0 +1,6 @@
+# Config load must fail naming the missing extruder section.
+CONFIG missing_extruder.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+M115

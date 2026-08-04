@@ -1,0 +1,6 @@
+# Config load must fail naming the required numbering.
+CONFIG bad_numbering.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+M115

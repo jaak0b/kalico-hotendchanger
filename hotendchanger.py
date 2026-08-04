@@ -19,6 +19,14 @@ DETECT_NONE = "none_mounted"
 DETECT_FAULT = "fault"
 DETECT_NO_PINS = "no_pins"
 
+CHANGE_PROCEED = "proceed"
+CHANGE_NOOP = "noop"
+CHANGE_REFUSE = "refuse"
+
+TEMP_WAIT_DONE = "done"
+TEMP_WAIT_WAITING = "waiting"
+TEMP_WAIT_CANCELED = "canceled"
+
 
 def format_tool(tool_number):
     return "T%d" % (tool_number,)
@@ -27,7 +35,9 @@ def format_tool(tool_number):
 def parse_tool_name(name):
     # Config section names arrive lowercased by klippy's config handling, so
     # both "T0" and "t0" are accepted; tool display names are always "T0".
-    if len(name) < 2 or name[0] not in ("T", "t") or not name[1:].isdigit():
+    # isdecimal instead of isdigit: superscript digits pass isdigit but make
+    # int() raise ValueError.
+    if len(name) < 2 or name[0] not in ("T", "t") or not name[1:].isdecimal():
         return None
     if name[1:] != str(int(name[1:])):
         return None
@@ -35,41 +45,66 @@ def parse_tool_name(name):
 
 
 def validate_tool_numbers(numbers):
+    numbers = sorted(numbers)
     if not numbers:
         return "no hotendchanger_tool sections configured"
-    expected = list(range(len(numbers)))
-    if sorted(numbers) != expected:
+    if numbers != list(range(len(numbers))):
         return (
             "hotendchanger_tool sections must be numbered T0..T%d with no"
             " gaps or duplicates, found: %s"
-            % (len(numbers) - 1, ", ".join(format_tool(n) for n in sorted(numbers)))
+            % (len(numbers) - 1, ", ".join(format_tool(n) for n in numbers))
         )
     return None
 
 
+def validate_detect_pin_coverage(tools_with_pin, all_tools):
+    with_pin = set(tools_with_pin)
+    missing = sorted(set(all_tools) - with_pin)
+    if not with_pin or not missing:
+        return None
+    return (
+        "either every hotendchanger_tool must set detect_pin or none may;"
+        " missing on: %s" % (", ".join(format_tool(n) for n in missing),)
+    )
+
+
+def validate_tool_extruders(extruders_by_tool):
+    tools_by_extruder = {}
+    for tool_number in sorted(extruders_by_tool):
+        extruder = extruders_by_tool[tool_number]
+        if extruder in tools_by_extruder:
+            return (
+                "hotendchanger_tool sections %s and %s both name extruder"
+                " section '%s'; each tool needs its own extruder section"
+                % (
+                    format_tool(tools_by_extruder[extruder]),
+                    format_tool(tool_number),
+                    extruder,
+                )
+            )
+        tools_by_extruder[extruder] = tool_number
+    return None
+
+
+def describe_pin_state(state):
+    return "triggered" if state else "untriggered"
+
+
 def describe_pin_states(pin_states):
     return ", ".join(
-        "%s=%s"
-        % (
-            format_tool(t),
-            "unreported" if s is None else ("triggered" if s else "untriggered"),
-        )
+        "%s=%s" % (format_tool(t), describe_pin_state(s))
         for t, s in sorted(pin_states.items())
     )
 
 
-def resolve_detection(pin_states, all_tool_numbers):
+def resolve_detection(pin_states):
     if not pin_states:
-        return (DETECT_NO_PINS, None, "no detect pins configured")
-    reading = describe_pin_states(pin_states)
-    unreported = sorted(t for t, s in pin_states.items() if s is None)
-    if unreported:
         return (
-            DETECT_FAULT,
+            DETECT_NO_PINS,
             None,
-            "detect pin state not yet reported for %s (%s)"
-            % (", ".join(format_tool(t) for t in unreported), reading),
+            "no detect pins configured, the mounted tool is unknown",
         )
+    reading = describe_pin_states(pin_states)
     untriggered = sorted(t for t, s in pin_states.items() if not s)
     if len(untriggered) == 1:
         return (
@@ -77,28 +112,23 @@ def resolve_detection(pin_states, all_tool_numbers):
             untriggered[0],
             "%s detected mounted (%s)" % (format_tool(untriggered[0]), reading),
         )
-    if len(untriggered) > 1:
+    if not untriggered:
         return (
-            DETECT_FAULT,
+            DETECT_NONE,
             None,
-            "multiple docks read untriggered: %s (%s)"
-            % (", ".join(format_tool(t) for t in untriggered), reading),
+            "all docks triggered, no tool mounted (%s)" % (reading,),
         )
-    uncovered = sorted(set(all_tool_numbers) - set(pin_states))
-    if uncovered:
-        return (
-            DETECT_FAULT,
-            None,
-            "all monitored docks triggered but %s have no detect pin, so the"
-            " mounted tool cannot be identified (%s)"
-            % (", ".join(format_tool(t) for t in uncovered), reading),
-        )
-    return (DETECT_NONE, None, "all docks triggered, no tool mounted (%s)" % (reading,))
+    return (
+        DETECT_FAULT,
+        None,
+        "multiple docks read untriggered: %s (%s)"
+        % (", ".join(format_tool(t) for t in untriggered), reading),
+    )
 
 
-def state_after_discovery(verdict, mounted_tool):
+def state_after_discovery(verdict, detected_tool):
     if verdict == DETECT_MOUNTED:
-        return (STATE_READY, mounted_tool)
+        return (STATE_READY, detected_tool)
     if verdict == DETECT_NONE:
         return (STATE_READY, None)
     if verdict == DETECT_FAULT:
@@ -108,26 +138,21 @@ def state_after_discovery(verdict, mounted_tool):
     raise ValueError("unhandled detection verdict %r" % (verdict,))
 
 
-def verify_mounted(pin_states, expected_tool):
-    reading = describe_pin_states(pin_states)
-    unreported = sorted(t for t, s in pin_states.items() if s is None)
-    if unreported:
-        return (
-            False,
-            "detect pin state not yet reported for %s (%s)"
-            % (", ".join(format_tool(t) for t in unreported), reading),
-        )
-    untriggered = sorted(t for t, s in pin_states.items() if not s)
-    if expected_tool in pin_states:
-        expected_untriggered = [expected_tool]
-    else:
-        expected_untriggered = []
-    if untriggered == expected_untriggered:
-        return (True, reading)
-    return (
-        False,
-        "expected %s mounted but docks read: %s" % (format_tool(expected_tool), reading),
-    )
+def verify_detected(pin_states, expected_tool):
+    verdict, detected, message = resolve_detection(pin_states)
+    if verdict == DETECT_MOUNTED:
+        if detected == expected_tool:
+            return None
+        return "expected %s mounted, but %s" % (format_tool(expected_tool), message)
+    if verdict == DETECT_NONE:
+        return "expected %s mounted, but %s" % (format_tool(expected_tool), message)
+    if verdict == DETECT_FAULT:
+        return "expected %s mounted, but %s" % (format_tool(expected_tool), message)
+    if verdict == DETECT_NO_PINS:
+        # Verification is only reached when detect pins exist, so an empty
+        # reading here is a caller bug, not an operator condition.
+        raise ValueError("verification requires detect pin readings")
+    raise ValueError("unhandled detection verdict %r" % (verdict,))
 
 
 def begin_change_refusal(state):
@@ -137,31 +162,71 @@ def begin_change_refusal(state):
         return None
     if state == STATE_UNINITIALIZED:
         return (
-            "hotendchanger is not initialized yet; wait for startup detection"
-            " or run INITIALIZE_HOTENDCHANGER"
+            "The hotendchanger is not initialized yet. Wait for startup"
+            " detection to finish, or run INITIALIZE_HOTENDCHANGER."
         )
     if state == STATE_CHANGING:
-        return "tool change already in progress"
+        return "A tool change is already in progress."
     if state == STATE_ERROR:
         return (
-            "hotendchanger is in the error state after a failed tool change;"
-            " run INITIALIZE_HOTENDCHANGER to clear it"
+            "The hotendchanger is in the error state after a failed tool"
+            " change. Run INITIALIZE_HOTENDCHANGER to clear it."
         )
     raise ValueError("unhandled hotendchanger state %r" % (state,))
 
 
+def change_decision(state, active_tool, requested_tool):
+    refusal = begin_change_refusal(state)
+    if refusal is not None:
+        return (CHANGE_REFUSE, refusal)
+    if requested_tool == active_tool:
+        return (
+            CHANGE_NOOP,
+            "%s is already the active tool" % (format_tool(requested_tool),),
+        )
+    return (CHANGE_PROCEED, None)
+
+
+def evaluate_temp_wait(temp, target, tolerance):
+    if target <= 0.0:
+        return TEMP_WAIT_CANCELED
+    if abs(temp - target) <= tolerance:
+        return TEMP_WAIT_DONE
+    return TEMP_WAIT_WAITING
+
+
 class OffsetLedger:
     def __init__(self):
-        self.applied = (0.0, 0.0, 0.0)
+        self.tool_component = (0.0, 0.0, 0.0)
+        self.commanded_origin = None
 
-    def delta_to(self, target):
+    def plan(self, current_origin, target):
+        current_origin = tuple(float(v) for v in current_origin)
         target = tuple(float(v) for v in target)
-        delta = tuple(t - a for t, a in zip(target, self.applied))
-        self.applied = target
-        return delta
+        if self.commanded_origin is None:
+            drift = (0.0, 0.0, 0.0)
+        else:
+            drift = tuple(
+                c - e for c, e in zip(current_origin, self.commanded_origin)
+            )
+        new_origin = tuple(
+            c - a + t
+            for c, a, t in zip(current_origin, self.tool_component, target)
+        )
+        return (new_origin, drift)
 
-    def clear(self):
-        return self.delta_to((0.0, 0.0, 0.0))
+    def commit(self, new_origin, target):
+        self.commanded_origin = tuple(float(v) for v in new_origin)
+        self.tool_component = tuple(float(v) for v in target)
+
+
+# Button state reports need the reactor running: klippy:ready handlers run
+# inline before the reactor loop resumes (klippy/printer.py:418-428) and
+# buttons deliver through register_async_callback
+# (klippy/extras/buttons.py:84-93), so startup detection runs from a timer.
+# The MCU polls buttons every QUERY_TIME=0.002s (buttons.py:12), so 0.5s
+# covers many poll cycles plus transport latency.
+STARTUP_DETECT_DELAY = 0.5
 
 
 class HotendchangerTool:
@@ -189,10 +254,12 @@ class HotendchangerTool:
         self.detect_state = None
         if self.detect_pin is not None:
             # Detect pins are read through the buttons module
-            # (klippy/extras/buttons.py:363 register_buttons): the MCU pushes
-            # state reports and the callback caches the latest level, so a
-            # read here is the last reported state, None before the first
-            # report arrives after connect.
+            # (klippy/extras/buttons.py:363 register_buttons). Callbacks fire
+            # only when the normalized level changes from the module's
+            # baseline of 0 (buttons.py:23,84-93), so a pin steady at 0
+            # never reports; False is that baseline, making the cached value
+            # correct from the start.
+            self.detect_state = False
             buttons = self.printer.load_object(config, "buttons")
             buttons.register_buttons([self.detect_pin], self._detect_callback)
         changer = self.printer.load_object(config, "hotendchanger")
@@ -246,7 +313,7 @@ class Hotendchanger:
         self.gcode.register_command(
             "INITIALIZE_HOTENDCHANGER",
             self._guarded(self.cmd_INITIALIZE_HOTENDCHANGER),
-            desc="Re-run tool detection from the configured detect pins",
+            desc="Re-run tool detection, or assert the mounted tool with T=<n>",
         )
 
     def register_tool(self, config, tool):
@@ -262,11 +329,11 @@ class Hotendchanger:
                 self._guarded(self._make_tool_command(tool.tool_number)),
                 desc="Change to tool %s" % (tool.name,),
             )
-        except self.printer.config_error:
+        except self.printer.config_error as e:
             raise config.error(
-                "gcode command %s is already defined (a [gcode_macro %s]"
-                " conflicts with [hotendchanger_tool %s]); remove one of them"
-                % (command, command, tool.name)
+                "cannot register gcode command %s for [hotendchanger_tool %s]:"
+                " %s. If a [gcode_macro %s] defines the same command, remove"
+                " either it or this tool section." % (command, tool.name, e, command)
             )
 
     def _make_tool_command(self, tool_number):
@@ -284,64 +351,104 @@ class Hotendchanger:
             except Exception as e:
                 logging.exception("hotendchanger: unexpected error")
                 raise self.printer.command_error(
-                    "hotendchanger internal error: %s: %s"
-                    % (type(e).__name__, e)
+                    "hotendchanger internal error: %s: %s. Check the klippy"
+                    " log for the traceback." % (type(e).__name__, e)
                 )
 
         return wrapper
 
     def _handle_connect(self):
-        error = validate_tool_numbers(sorted(self.tools))
-        if error is not None:
-            raise self.printer.config_error(error)
+        for message in (
+            validate_tool_numbers(self.tools),
+            validate_detect_pin_coverage(
+                [n for n, t in self.tools.items() if t.detect_pin is not None],
+                self.tools,
+            ),
+            validate_tool_extruders(
+                {n: t.extruder_name for n, t in self.tools.items()}
+            ),
+        ):
+            if message is not None:
+                raise self.printer.config_error(message)
         for tool in self.tools.values():
-            if self.printer.lookup_object(tool.extruder_name, None) is None:
+            extruder = self.printer.lookup_object(tool.extruder_name, None)
+            if extruder is None:
                 raise self.printer.config_error(
                     "hotendchanger_tool %s names extruder section '%s' which"
                     " does not exist" % (tool.name, tool.extruder_name)
                 )
+            if not hasattr(extruder, "get_heater"):
+                raise self.printer.config_error(
+                    "hotendchanger_tool %s names section '%s' which is not a"
+                    " heater-bearing extruder" % (tool.name, tool.extruder_name)
+                )
 
     def _handle_ready(self):
-        if self._monitored_pin_states():
-            self._run_discovery(self.gcode.respond_info)
-        else:
-            self.state = STATE_UNKNOWN
+        # In debugoutput batch mode no MCU pushes button reports and the test
+        # gcode runs immediately after ready, so discovery runs inline there.
+        if self.printer.get_start_args().get("debugoutput") is not None:
+            self._startup_discovery()
+            return
+        reactor = self.printer.get_reactor()
+        reactor.register_timer(
+            self._startup_discovery_timer,
+            reactor.monotonic() + STARTUP_DETECT_DELAY,
+        )
 
-    def _monitored_pin_states(self):
+    def _startup_discovery_timer(self, eventtime):
+        self._startup_discovery()
+        return self.printer.get_reactor().NEVER
+
+    def _startup_discovery(self):
+        try:
+            self._run_discovery(self.gcode.run_script)
+        except Exception:
+            logging.exception("hotendchanger: startup detection failed")
+            self.state = STATE_ERROR
+            self.gcode.respond_info(
+                "hotendchanger: startup detection failed. Check the klippy"
+                " log for the traceback, fix the cause, then run"
+                " INITIALIZE_HOTENDCHANGER."
+            )
+
+    def _pin_states(self):
         return {
             n: tool.detect_state
             for n, tool in self.tools.items()
             if tool.detect_pin is not None
         }
 
-    def _run_discovery(self, respond_info):
-        verdict, mounted, message = resolve_detection(
-            self._monitored_pin_states(), self.tools
-        )
-        self.state, self.active_tool = state_after_discovery(verdict, mounted)
-        self.detected_tool = mounted
-        respond_info("hotendchanger detection: %s" % (message,))
+    def _run_discovery(self, script_runner):
+        verdict, detected, message = resolve_detection(self._pin_states())
+        self.state, self.active_tool = state_after_discovery(verdict, detected)
+        self.detected_tool = detected
+        self.gcode.respond_info("hotendchanger detection: %s" % (message,))
         if self.active_tool is not None:
-            self._apply_tool_offset(self.tools[self.active_tool].offset)
+            target = self.tools[self.active_tool].offset
         else:
-            self._clear_tool_offset()
+            target = (0.0, 0.0, 0.0)
+        self._set_tool_offset(target, script_runner)
 
-    def _send_offset_adjust(self, delta):
-        if delta == (0.0, 0.0, 0.0):
-            return
-        # X_ADJUST/Y_ADJUST/Z_ADJUST adjust the offset incrementally
-        # (klippy/extras/gcode_move.py:258-270), so a babystepping offset the
-        # user applied on top is preserved.
-        self.gcode.run_script_from_command(
-            "SET_GCODE_OFFSET X_ADJUST=%.6f Y_ADJUST=%.6f Z_ADJUST=%.6f"
-            % delta
-        )
-
-    def _apply_tool_offset(self, offset):
-        self._send_offset_adjust(self.ledger.delta_to(offset))
-
-    def _clear_tool_offset(self):
-        self._send_offset_adjust(self.ledger.clear())
+    def _set_tool_offset(self, target, script_runner):
+        gcode_move = self.printer.lookup_object("gcode_move")
+        current = tuple(gcode_move.get_status()["homing_origin"][:3])
+        new_origin, drift = self.ledger.plan(current, target)
+        if drift != (0.0, 0.0, 0.0):
+            self.gcode.respond_info(
+                "hotendchanger: preserving gcode offset adjustments made"
+                " outside the plugin: X=%.6f Y=%.6f Z=%.6f" % drift
+            )
+        if new_origin != current:
+            # The absolute X/Y/Z form of SET_GCODE_OFFSET sets homing_position
+            # directly (klippy/extras/gcode_move.py:258-270). The new origin
+            # keeps the non-tool component (current minus the applied tool
+            # component), so babystepping is preserved, and the live origin
+            # is re-read each time, so an outside change is carried once
+            # instead of compounded.
+            script_runner(
+                "SET_GCODE_OFFSET X=%.6f Y=%.6f Z=%.6f" % new_origin
+            )
+        self.ledger.commit(new_origin, target)
 
     def _render_and_run(self, template, context_extra):
         context = template.create_template_context()
@@ -355,17 +462,18 @@ class Hotendchanger:
         missing = [a for a in "xyz" if a not in homed]
         if missing:
             raise gcmd.error(
-                "tool change requires XYZ homed; not homed: %s"
+                "Home all axes with G28 before a tool change. Not homed: %s"
                 % (", ".join(missing),)
             )
 
     def _pause_print(self, message):
-        self.gcode.respond_info(message)
         if self.printer.lookup_object("pause_resume", None) is None:
             raise self.printer.command_error(
-                "%s (and [pause_resume] is not configured, so the print"
-                " cannot be paused automatically)" % (message,)
+                "%s No [pause_resume] section is configured, so the print"
+                " cannot be paused automatically. Add one to enable pausing"
+                " here." % (message,)
             )
+        self.gcode.respond_info(message)
         # PAUSE is registered by klippy/extras/pause_resume.py:79 and runs
         # any user PAUSE macro override.
         self.gcode.run_script_from_command("PAUSE")
@@ -376,25 +484,54 @@ class Hotendchanger:
         _, target = heater.get_temp(eventtime)
         if target <= 0.0:
             return
-        # TEMPERATURE_WAIT (klippy/extras/heaters.py:1482-1507) accepts the
-        # extruder section name as SENSOR (registered by heaters.py:1407-1408)
-        # and MINIMUM/MAXIMUM bound both sides, giving the symmetric window
-        # around the target.
-        self.gcode.run_script_from_command(
-            "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.6f MAXIMUM=%.6f"
-            % (
-                extruder_name,
-                target - self.temp_wait_tolerance,
-                target + self.temp_wait_tolerance,
-            )
+        self.gcode.respond_info(
+            "hotendchanger: waiting for %s to reach %.1fC (within %.1fC)"
+            % (extruder_name, target, self.temp_wait_tolerance)
         )
+        # Wait loop per TEMPERATURE_WAIT (klippy/extras/heaters.py:1482-1507)
+        # including its debugoutput skip, but polled here instead of run as
+        # that command because TEMPERATURE_WAIT compares against fixed bounds
+        # and never re-reads the target: a target lowered mid-wait (M104 S0)
+        # would make it wait forever.
+        if self.printer.get_start_args().get("debugoutput") is not None:
+            return
+        canceled = [False]
+
+        def check(eventtime):
+            temp, current_target = heater.get_temp(eventtime)
+            result = evaluate_temp_wait(
+                temp, current_target, self.temp_wait_tolerance
+            )
+            if result == TEMP_WAIT_WAITING:
+                return True
+            if result == TEMP_WAIT_DONE:
+                return False
+            if result == TEMP_WAIT_CANCELED:
+                canceled[0] = True
+                return False
+            raise ValueError("unhandled temperature wait result %r" % (result,))
+
+        self.printer.wait_while(check)
+        if canceled[0]:
+            raise self.printer.command_error(
+                "The target temperature of %s was cleared during the wait."
+                " Set a temperature again, then rerun the tool change."
+                % (extruder_name,)
+            )
 
     def _do_tool_change(self, gcmd, tool_number):
-        if tool_number == self.active_tool:
+        decision, message = change_decision(
+            self.state, self.active_tool, tool_number
+        )
+        if decision == CHANGE_REFUSE:
+            raise gcmd.error(message)
+        elif decision == CHANGE_NOOP:
+            gcmd.respond_info(message)
             return
-        refusal = begin_change_refusal(self.state)
-        if refusal is not None:
-            raise gcmd.error(refusal)
+        elif decision == CHANGE_PROCEED:
+            pass
+        else:
+            raise ValueError("unhandled tool change decision %r" % (decision,))
         self._check_homed(gcmd)
         new_tool = self.tools[tool_number]
         old_tool = None
@@ -405,9 +542,12 @@ class Hotendchanger:
             "new_tool": new_tool.template_context(),
         }
         self.state = STATE_CHANGING
+        outcome = None
         try:
             self._render_and_run(self.before_template, change_context)
-            self._clear_tool_offset()
+            self._set_tool_offset(
+                (0.0, 0.0, 0.0), self.gcode.run_script_from_command
+            )
             if old_tool is not None:
                 self._render_and_run(
                     self.dropoff_template,
@@ -423,53 +563,72 @@ class Hotendchanger:
                     "params": dict(new_tool.params),
                 },
             )
-            pin_states = self._monitored_pin_states()
+            pin_states = self._pin_states()
             if pin_states:
-                ok, detail = verify_mounted(pin_states, tool_number)
-                self.detected_tool = tool_number if ok else None
-                if not ok:
+                mismatch = verify_detected(pin_states, tool_number)
+                if mismatch is not None:
+                    self.detected_tool = None
+                    outcome = "verify_failed"
                     self._pause_print(
-                        "hotendchanger: tool verification failed after picking"
-                        " up %s: %s" % (new_tool.name, detail)
+                        "Tool change to %s paused the print: %s. Check the"
+                        " hotend seating on the carriage and the dock switch"
+                        " wiring, then run INITIALIZE_HOTENDCHANGER and"
+                        " RESUME." % (new_tool.name, mismatch)
                     )
-                    raise gcmd.error(
-                        "tool verification failed after picking up %s: %s"
-                        % (new_tool.name, detail)
-                    )
+                    return
+                self.detected_tool = tool_number
             self.gcode.run_script_from_command(
                 "ACTIVATE_EXTRUDER EXTRUDER=%s" % (new_tool.extruder_name,)
             )
             self._wait_for_temperature(new_tool.extruder_name)
-            self._apply_tool_offset(new_tool.offset)
+            self._set_tool_offset(
+                new_tool.offset, self.gcode.run_script_from_command
+            )
             self._render_and_run(self.after_template, change_context)
-        except Exception:
-            self.state = STATE_ERROR
-            self.active_tool = None
-            raise
-        self.active_tool = tool_number
-        self.state = STATE_READY
+            outcome = "success"
+        finally:
+            if outcome == "success":
+                self.active_tool = tool_number
+                self.state = STATE_READY
+            elif outcome == "verify_failed":
+                self.active_tool = None
+                self.state = STATE_ERROR
+            elif outcome is None:
+                # An exception (of any kind, BaseException included) left the
+                # change unfinished; the mounted tool is no longer known.
+                self.active_tool = None
+                self.state = STATE_ERROR
+            else:
+                logging.error(
+                    "hotendchanger: unhandled tool change outcome %r", outcome
+                )
+                self.active_tool = None
+                self.state = STATE_ERROR
 
     def cmd_SET_TOOL_OFFSET(self, gcmd):
         tool_number = gcmd.get_int("T", minval=0)
         if tool_number not in self.tools:
-            raise gcmd.error("no hotendchanger_tool %s configured" % (format_tool(tool_number),))
+            raise gcmd.error(
+                "no hotendchanger_tool %s configured" % (format_tool(tool_number),)
+            )
         tool = self.tools[tool_number]
         for axis_index, axis in enumerate("XYZ"):
             value = gcmd.get_float(axis, None)
             if value is not None:
                 tool.offset[axis_index] = value
         if tool_number == self.active_tool:
-            self._apply_tool_offset(tool.offset)
+            self._set_tool_offset(
+                tool.offset, self.gcode.run_script_from_command
+            )
         if gcmd.get_int("SAVE", 0):
             configfile = self.printer.lookup_object("configfile")
-            section = tool.section_name
             for axis_index, option in enumerate(
                 ("gcode_x_offset", "gcode_y_offset", "gcode_z_offset")
             ):
-                configfile.set(section, option, "%.6f" % (tool.offset[axis_index],))
-            gcmd.respond_info(
-                "%s offset stored for SAVE_CONFIG" % (tool.name,)
-            )
+                configfile.set(
+                    tool.section_name, option, "%.6f" % (tool.offset[axis_index],)
+                )
+            gcmd.respond_info("%s offset stored for SAVE_CONFIG" % (tool.name,))
 
     def cmd_HOTENDCHANGER_STATUS(self, gcmd):
         rows = [
@@ -482,13 +641,10 @@ class Hotendchanger:
         for n in sorted(self.tools):
             tool = self.tools[n]
             if tool.detect_pin is not None:
-                if tool.detect_state is None:
-                    reading = "unreported"
-                elif tool.detect_state:
-                    reading = "triggered"
-                else:
-                    reading = "untriggered"
-                rows.append("%s detect_pin: %s" % (tool.name, reading))
+                rows.append(
+                    "%s detect_pin: %s"
+                    % (tool.name, describe_pin_state(tool.detect_state))
+                )
         for n in sorted(self.tools):
             tool = self.tools[n]
             rows.append(
@@ -504,17 +660,35 @@ class Hotendchanger:
         gcmd.respond_info("\n".join(rows))
 
     def cmd_INITIALIZE_HOTENDCHANGER(self, gcmd):
-        if not self._monitored_pin_states():
-            self.state = STATE_UNKNOWN
-            self.active_tool = None
+        if self.state == STATE_CHANGING:
+            raise gcmd.error(
+                "A tool change is in progress. Let it finish before"
+                " reinitializing."
+            )
+        asserted = gcmd.get_int("T", None, minval=0)
+        if asserted is not None:
+            if self._pin_states():
+                raise gcmd.error(
+                    "Detect pins are configured, so detection determines the"
+                    " mounted tool. Run INITIALIZE_HOTENDCHANGER without T."
+                )
+            if asserted not in self.tools:
+                raise gcmd.error(
+                    "no hotendchanger_tool %s configured"
+                    % (format_tool(asserted),)
+                )
+            tool = self.tools[asserted]
+            self.active_tool = asserted
             self.detected_tool = None
-            self._clear_tool_offset()
+            self.state = STATE_READY
+            self._set_tool_offset(
+                tool.offset, self.gcode.run_script_from_command
+            )
             gcmd.respond_info(
-                "hotendchanger: no detect pins configured, state set to"
-                " unknown; the next T<n> command runs pickup only"
+                "hotendchanger: %s asserted as the mounted tool" % (tool.name,)
             )
             return
-        self._run_discovery(gcmd.respond_info)
+        self._run_discovery(self.gcode.run_script_from_command)
 
     def get_status(self, eventtime):
         return {
@@ -522,12 +696,17 @@ class Hotendchanger:
             "detected_tool": self.detected_tool,
             "state": self.state,
             "tools": {
-                n: {
-                    "name": tool.name,
+                tool.name: {
+                    "number": n,
                     "extruder": tool.extruder_name,
                     "gcode_x_offset": tool.offset[0],
                     "gcode_y_offset": tool.offset[1],
                     "gcode_z_offset": tool.offset[2],
+                    "detect": (
+                        describe_pin_state(tool.detect_state)
+                        if tool.detect_pin is not None
+                        else None
+                    ),
                 }
                 for n, tool in self.tools.items()
             },

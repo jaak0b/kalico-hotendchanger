@@ -1,0 +1,6 @@
+# Config load must fail naming the tools missing detect_pin.
+CONFIG mixed_detect.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+M115

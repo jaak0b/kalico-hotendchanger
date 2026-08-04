@@ -1,0 +1,6 @@
+# Config load must fail naming the shared extruder section.
+CONFIG duplicate_extruder.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+M115

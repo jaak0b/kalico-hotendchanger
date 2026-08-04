@@ -18,7 +18,7 @@ The tool change sequencing in this design was checked against two existing commu
 The Kalico surfaces this design depends on were verified against a local Kalico source clone before being relied on:
 
 - klippy/kinematics/extruder.py: an `[extruderN]` section becomes a heater-only extruder object when no step pins are configured for it, and a full `PrinterExtruder` with an `ExtruderStepper` when they are. This is what lets T0 be the only extruder with real stepper motion while T1..Tn are heater-only.
-- klippy/extras/gcode_move.py: `SET_GCODE_OFFSET` supports incremental (MOVE=1-relative) adjustment of the X, Y, Z gcode offset, which composes with user babystepping instead of overwriting it.
+- klippy/extras/gcode_move.py: the absolute X/Y/Z form of `SET_GCODE_OFFSET` sets the gcode origin (`homing_position`) directly, and `gcode_move`'s status exposes the live origin as `homing_origin`. The plugin reads the live origin before every offset command and rebuilds it as (current origin minus the tool component it last applied, plus the new tool component), so user babystepping stays in the origin and an origin changed outside the plugin is picked up once instead of compounded.
 - klippy/extras/heater_fan.py: the `heater` option accepts any configured heater section name, so a `[heater_fan]` can be bound to `extruder1`, `extruder2`, and so on.
 - klippy/extras/gcode_macro.py: `load_template` is the standard way a plugin loads a user-supplied gcode template from its own config section.
 - klippy/extras/toolhead.py and printer.py: plugin loading and the `ACTIVATE_EXTRUDER` command, which switches the active extruder for bare M104/M109/M105 and resets extruder-relative E axis bookkeeping.
@@ -54,11 +54,11 @@ Everything else (heater PID, sensor readout, fan control, temperature display, M
 | `dropoff_gcode` | yes | none | Gcode template run to drop off the currently mounted hotend at its dock. Shared by all tools; the tool being dropped off is passed into the template context. |
 | `before_change_gcode` | no | empty | Template run before a tool change begins (before any offset or motion change). |
 | `after_change_gcode` | no | empty | Template run after a tool change completes (after the new offset is applied and the temperature wait, if any, finishes). |
-| `temp_wait_tolerance` | no | `2.0` | Degrees C. After pickup, if the new tool's heater has a nonzero target, the plugin runs `TEMPERATURE_WAIT` with a symmetric `MINIMUM`/`MAXIMUM` window of target plus or minus this value, so a hotend that was preheated and is overshooting its target on the way down completes the wait as soon as it re-enters the window. No target set means no wait is performed. Dropoff never waits. This is an algorithm tunable, not a machine-specific value, so it has a documented default. |
+| `temp_wait_tolerance` | no | `2.0` | Degrees C. After pickup, if the new tool's heater has a nonzero target, the plugin waits until the hotend temperature is within a symmetric window of target plus or minus this value, so a hotend that was preheated and is overshooting its target on the way down completes the wait as soon as it re-enters the window. The wait re-reads the target on every poll: a target cleared mid-wait (M104 S0) aborts the wait with a command error instead of waiting forever, which is why the plugin polls the heater itself instead of running `TEMPERATURE_WAIT` (that command compares against fixed bounds and never re-reads the target). No target set means no wait is performed. Dropoff never waits. This is an algorithm tunable, not a machine-specific value, so it has a documented default. |
 
-If any configured tool has a `detect_pin`, the plugin runs detection automatically at Kalico startup (equivalent to `INITIALIZE_HOTENDCHANGER`) so the active tool is known before the first print starts.
+The plugin runs detection automatically shortly after Kalico reaches ready (equivalent to `INITIALIZE_HOTENDCHANGER`) so the active tool is known before the first print starts. Detection cannot run inside the ready handler itself: button state reports arrive through reactor callbacks that only run after the ready handlers return, so discovery runs from a one-shot reactor timer half a second later.
 
-Post-change verification behavior is fixed, not configurable. After a `T<n>` change, if any tool has a `detect_pin` configured and the reading contradicts the tool the plugin expected to find mounted, the plugin pauses the print through Kalico's standard pause mechanism and prints a console message naming the expected tool and the actual reading. Startup detection and `INITIALIZE_HOTENDCHANGER` remain pure discovery: an ambiguous reading there produces a console message and sets state to `unknown`, never a pause.
+Post-change verification behavior is fixed, not configurable. After a `T<n>` change, if detect pins are configured and the reading contradicts the tool the plugin expected to find mounted, the plugin prints one console message naming the expected tool, the actual reading and what to check, pauses the print through Kalico's standard pause mechanism, and sets the state to `error`; it does not additionally raise, because an error raised into a printing job aborts the print instead of leaving it paused. Startup detection and `INITIALIZE_HOTENDCHANGER` remain pure discovery: an ambiguous reading there produces a console message and sets state to `unknown`, never a pause.
 
 ### `[hotendchanger_tool T0]`, `[hotendchanger_tool T1]`, ... (one section per tool)
 
@@ -70,12 +70,14 @@ The tool number is parsed from the section name, so section names must follow th
 | `gcode_x_offset` | no | `0` | Gcode X offset applied while this tool is active. |
 | `gcode_y_offset` | no | `0` | Gcode Y offset applied while this tool is active. |
 | `gcode_z_offset` | no | `0` | Gcode Z offset applied while this tool is active. |
-| `detect_pin` | no | none | Endstop-style pin for this tool's dock sensor. Triggered means the hotend is physically present in the dock (not mounted on the carriage). |
+| `detect_pin` | no | none | Endstop-style pin for this tool's dock sensor. Triggered means the hotend is physically present in the dock (not mounted on the carriage). All-or-nothing across the tools: either every tool sets a `detect_pin` or none does; a mix is a config error at connect naming the tools missing it. |
 | `params_*` | no | none | Arbitrary named values (for example dock coordinates) exposed to the pickup and dropoff templates under this tool's params. Any number of `params_` options may be defined per tool. |
 
 Dock coordinates and any other physical, per-printer values belong in `params_*` options. They are required for a working machine but have no correct default the plugin can supply, so the example config below leaves them blank.
 
-Detect pin semantics: a hotend sitting in its own dock holds that dock's switch triggered; a hotend mounted on the carriage leaves its dock switch untriggered. Electrical polarity does not matter here: users normalize wiring with Klipper's standard `!` pin inversion prefix, and the plugin only ever reasons about triggered versus untriggered. Resolution is computed over all configured detect pins together, not one pin in isolation: exactly one untriggered dock identifies that tool as the one mounted on the carriage; more than one untriggered dock is a fault. An all-triggered reading means "no tool mounted" only when every configured tool has a detect pin; with partial pin coverage, all monitored docks triggered cannot distinguish "nothing mounted" from "an unmonitored tool mounted", so it resolves as a fault. During post-change verification this fault is handled the same way as an expectation mismatch (pause, with a console message). During startup or `INITIALIZE_HOTENDCHANGER` discovery it produces a console message and state `unknown`.
+Detect pin semantics: a hotend sitting in its own dock holds that dock's switch triggered; a hotend mounted on the carriage leaves its dock switch untriggered. Electrical polarity does not matter here: users normalize wiring with Klipper's standard `!` pin inversion prefix, and the plugin only ever reasons about triggered versus untriggered. Because detect pins are all-or-nothing across the tools, resolution always sees every dock: exactly one untriggered dock identifies that tool as the one mounted on the carriage; all docks triggered means no tool is currently mounted; more than one untriggered dock is a fault. During post-change verification a fault is handled the same way as an expectation mismatch (pause, with a console message). During startup or `INITIALIZE_HOTENDCHANGER` discovery it produces a console message and state `unknown`.
+
+Pin levels are cached from the buttons module's change reports, whose baseline level is untriggered: a dock switch that never reports reads untriggered, which is exactly the reading a mounted tool's own dock produces.
 
 ### Example config
 
@@ -89,72 +91,76 @@ dropoff_gcode:
     G1 X{params.dock_x} Y{params.dock_y} F6000
     G1 Z{params.dock_z} F600
     ; mechanical dropoff motion for this printer's dock design
-temp_wait_tolerance: 2.0
+#temp_wait_tolerance: 2.0
 
 [hotendchanger_tool T0]
 extruder: extruder
-gcode_x_offset: 0
-gcode_y_offset: 0
-gcode_z_offset: 0
-params_dock_x:
-params_dock_y:
-params_dock_z:
+#gcode_x_offset: 0
+#gcode_y_offset: 0
+#gcode_z_offset: 0
+#params_dock_x:
+#params_dock_y:
+#params_dock_z:
 
 [hotendchanger_tool T1]
 extruder: extruder1
-gcode_x_offset:
-gcode_y_offset:
-gcode_z_offset:
-detect_pin:
-params_dock_x:
-params_dock_y:
-params_dock_z:
+#gcode_x_offset: 0
+#gcode_y_offset: 0
+#gcode_z_offset: 0
+#detect_pin:
+#params_dock_x:
+#params_dock_y:
+#params_dock_z:
 
 [heater_fan hotend1_fan]
-pin:
+#pin:
 heater: extruder1
 ```
 
-Blank values above (dock coordinates, T1's offsets, the detect pin, the fan pin) are placeholders for values that depend on the specific printer and must be filled in before this config is usable.
+Options shown commented out are either optional or have no value the plugin can supply: dock coordinates, offsets, the detect pin and the fan pin depend on the specific printer. A blank uncommented value does not parse, so uncomment such a line only when filling in the machine's own value. The `params_dock_*` trio is shown per tool because dock positions normally differ per tool.
 
 ## Tool change sequence (`T<n>`)
 
-1. Guard checks: XYZ must be homed (docks are absolute positions), no tool change already in progress, and `n` must name a configured tool. `T<n>` equal to the currently active tool is a no-op and returns immediately.
+1. Guard checks, in order: the state must allow starting a change (refusals are checked before the no-op so `T<n>` in the `error` or `changing` state reports the refusal instead of silently succeeding), `T<n>` equal to the currently active tool responds that it is already active and returns, and XYZ must be homed (docks are absolute positions).
 2. Run `before_change_gcode`.
-3. Remove the currently applied tool gcode offset via `SET_GCODE_OFFSET`, so only the tool's own X/Y/Z contribution is cleared. Any offset from user babystepping is untouched, because the plugin tracks and removes only the component it added.
+3. Remove the currently applied tool gcode offset: the plugin reads the live gcode origin, subtracts the tool component it last applied, and issues an absolute `SET_GCODE_OFFSET`. Any offset from user babystepping stays in the origin, because only the tracked tool component is replaced.
 4. If a tool is currently mounted (state is known), run `dropoff_gcode` with the old tool in the template context. If the mounted tool is unknown, dropoff is skipped: there is nothing safe to send back to a dock without knowing which dock it belongs to.
 5. Run `pickup_gcode` with the new tool in the template context.
-6. If any configured tool has a `detect_pin`, verify the newly picked up tool is the one detected mounted. On a mismatch or a detection fault, pause the print through Kalico's standard pause mechanism and print a console message naming the expected tool and the actual reading.
+6. If detect pins are configured, verify the newly picked up tool is the one detected mounted. On a mismatch or a detection fault, print one console message naming the expected tool, the actual reading and what to check, pause the print through Kalico's standard pause mechanism, set the state to `error`, and return without raising.
 7. Call `ACTIVATE_EXTRUDER` with the new tool's extruder section, so bare M104/M109/M105 and E axis bookkeeping follow the new active hotend.
-8. If the new tool's heater has a nonzero target temperature, wait until it is within `temp_wait_tolerance` of that target.
-9. Reapply the new tool's gcode offset, run `after_change_gcode`, and mark the tool change complete.
+8. If the new tool's heater has a nonzero target temperature, wait until it is within `temp_wait_tolerance` of that target, re-reading the target on every poll; a target cleared during the wait aborts the change with a command error.
+9. Reapply the new tool's gcode offset (same absolute-origin scheme as step 3), run `after_change_gcode`, and mark the tool change complete.
 
 ## Commands
 
 - `T0` through `T<N-1>`: registered dynamically, one per configured tool, at config load time. If a user has separately defined a `[gcode_macro Tn]` for a tool number the plugin also owns, this is a config error and must be reported as such; a printer with both would have two competing definitions of the same command name.
-- `SET_TOOL_OFFSET T=<n> X=<x> Y=<y> Z=<z> [SAVE=1]`: sets a tool's gcode offset at runtime. This is the interface a separate nozzle offset calibration plugin uses to write results back. With `SAVE=1`, the value is written through `configfile.set()` so a subsequent `SAVE_CONFIG` persists it.
-- `HOTENDCHANGER_STATUS`: prints labeled rows: active tool, current state, each configured tool's detect pin state (if any), and each configured tool's current X/Y/Z offset.
-- `INITIALIZE_HOTENDCHANGER`: re-runs detection against configured detect pins. Intended for use after a tool was moved or serviced by hand.
+- `SET_TOOL_OFFSET T=<n> [X=<x>] [Y=<y>] [Z=<z>] [SAVE=1]`: sets a tool's gcode offset at runtime; axes left out keep their current value, and the offset is reapplied immediately when the tool is active. This is the interface a separate nozzle offset calibration plugin uses to write results back. With `SAVE=1`, the value is written through `configfile.set()` so a subsequent `SAVE_CONFIG` persists it.
+- `HOTENDCHANGER_STATUS`: prints labeled rows: active tool, detected tool, current state, each tool's detect pin reading (when pins are configured), and per tool one row with the current X/Y/Z offset and the extruder section name.
+- `INITIALIZE_HOTENDCHANGER [T=<n>]`: re-runs detection against configured detect pins. Intended for use after a tool was moved or serviced by hand, and it is the only way to leave the `error` state. On a printer without detect pins, `T=<n>` asserts by hand which tool is mounted (state becomes `ready` with that tool active and its offset applied); with detect pins configured `T=` is refused, since detection determines the mounted tool. Refused while a change is in progress.
 
 ## State
 
 State is one of: `uninitialized`, `ready`, `changing`, `error`, `unknown`.
 
-- If any tool has a `detect_pin`, the plugin runs detection at Kalico startup and after `INITIALIZE_HOTENDCHANGER`, moving to `ready` or `unknown` (an ambiguous or faulted read) as the detection result dictates. Discovery resolving "no tool mounted" (full pin coverage, all docks triggered) also yields `ready`, with `active_tool` none; a subsequent `T<n>` from that state skips dropoff, since nothing is mounted to return to a dock.
-- If no tool has a `detect_pin`, state starts `unknown` and stays there until the first successful `T<n>`. A `T<n>` issued from `unknown` runs pickup only (step 4 of the sequence above is skipped, per its own rule, since there is nothing known to drop off).
-- During a tool change, state is `changing`. A change that fails partway (a template gcode error, or a verification mismatch, which also pauses the print) leaves state at `error`, and further `T<n>` commands are refused until `INITIALIZE_HOTENDCHANGER` or a successful change clears it.
+- `uninitialized` is the pre-ready window: the interval between config load and the startup discovery that runs shortly after klippy reaches ready. `T<n>` is refused in it.
+- With detect pins, the plugin runs detection shortly after Kalico startup and on `INITIALIZE_HOTENDCHANGER`, moving to `ready` or `unknown` (an ambiguous or faulted read) as the detection result dictates. Discovery resolving "no tool mounted" (all docks triggered) also yields `ready`, with `active_tool` none; the plugin distinguishes that known-empty carriage (`ready`, no active tool: a `T<n>` skips dropoff because nothing is mounted) from an unknown mounted tool (`unknown`: dropoff is skipped because whatever may be mounted has no known dock).
+- Without detect pins, state starts `unknown` and stays there until the first successful `T<n>` or an `INITIALIZE_HOTENDCHANGER T=<n>` assertion. A `T<n>` issued from `unknown` runs pickup only (step 4 of the sequence above is skipped, per its own rule, since there is nothing known to drop off).
+- During a tool change, state is `changing`. A change that fails partway (a template gcode error, or a verification mismatch, which also pauses the print) leaves state at `error` with no active tool, because a hotend may still be on the carriage without the plugin knowing which: further `T<n>` commands are refused until `INITIALIZE_HOTENDCHANGER` clears the state, through detection or, on a pinless machine, through the operator's `T=<n>` assertion.
 
-`get_status` (the plugin's status object read by macros and the web interface) exposes: `active_tool` (a tool number, or `None`), `detected_tool`, `state`, and a per-tool dictionary keyed by tool number holding each tool's current offset and extruder section name.
+`get_status` (the plugin's status object read by macros and the web interface) exposes exactly these keys: `active_tool` (a tool number, or `None`), `detected_tool` (a tool number, or `None`), `state`, and `tools`, a dictionary keyed by tool name (`"T0"`, `"T1"`, ...; string keys, so the mapping survives JSON serialization) whose entries carry `number`, `extruder`, `gcode_x_offset`, `gcode_y_offset`, `gcode_z_offset`, and `detect` (the pin reading as `"triggered"`/`"untriggered"`, or `None` without a pin).
 
 Every branch over this state enum is written to handle each member explicitly with an unhandled case raising a command error naming the unhandled value; none end in a bare `else` that silently absorbs a state added later.
 
 ## Template context
 
-`pickup_gcode`, `dropoff_gcode`, `before_change_gcode`, and `after_change_gcode` templates receive tool objects carrying: tool number, tool name (the `T<n>` section suffix), extruder section name, and all `params_*` values defined for that tool. Where a template concerns a transition between two tools (the two change-hook templates), both the old and new tool objects are available in context, distinguished by name.
+A tool object in template context is a mapping with the keys `number` (the tool number), `name` (`"T0"` style), `extruder` (the extruder section name), and `params` (all `params_*` values defined for that tool, keyed without the prefix).
+
+- `pickup_gcode` and `dropoff_gcode` receive `tool` (the tool being picked up or dropped off) and `params`, a flat shortcut for `tool.params`, so dock motion reads naturally as `{params.dock_x}`.
+- `before_change_gcode` and `after_change_gcode` receive `old_tool` and `new_tool`. `old_tool` is `None` when no tool is mounted (the first change, or a change from a known-empty carriage), so templates must guard accesses like `{old_tool.name if old_tool else "none"}`.
 
 ## Error handling
 
-Every failure a user or a template can trigger raises a Kalico `CommandError` carrying a message naming the actual condition (missing tool, ambiguous or contradictory detection, template gcode error, not homed, change already in progress). No exception from plugin code is allowed to reach klippy's bare gcode dispatcher uncaught, since an uncaught exception there is a printer shutdown, not an error message reaching the operator.
+Every failure a user or a template can trigger raises a Kalico `CommandError` carrying a message naming the actual condition (missing tool, template gcode error, not homed, change already in progress), with one deliberate exception: a post-change verification mismatch pauses the print and returns without raising, because raising into a printing job aborts it instead of leaving it paused. No exception from plugin code is allowed to reach klippy's bare gcode dispatcher uncaught, since an uncaught exception there is a printer shutdown, not an error message reaching the operator; non-command entry points (the startup discovery timer) catch everything, log the traceback and move to the `error` state instead of letting an exception escape.
 
 ## Testing
 

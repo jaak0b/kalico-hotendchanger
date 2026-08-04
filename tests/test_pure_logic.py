@@ -2,6 +2,9 @@ import pytest
 
 from hotendchanger import (
     ALL_STATES,
+    CHANGE_NOOP,
+    CHANGE_PROCEED,
+    CHANGE_REFUSE,
     DETECT_FAULT,
     DETECT_MOUNTED,
     DETECT_NONE,
@@ -11,13 +14,22 @@ from hotendchanger import (
     STATE_READY,
     STATE_UNINITIALIZED,
     STATE_UNKNOWN,
+    TEMP_WAIT_CANCELED,
+    TEMP_WAIT_DONE,
+    TEMP_WAIT_WAITING,
     OffsetLedger,
     begin_change_refusal,
+    change_decision,
+    describe_pin_state,
+    describe_pin_states,
+    evaluate_temp_wait,
     parse_tool_name,
     resolve_detection,
     state_after_discovery,
+    validate_detect_pin_coverage,
+    validate_tool_extruders,
     validate_tool_numbers,
-    verify_mounted,
+    verify_detected,
 )
 
 
@@ -38,7 +50,8 @@ class TestParseToolName:
 
     @pytest.mark.parametrize(
         "name",
-        ["", "T", "t", "T-1", "T01", "t01", "T1a", "tool0", "0"],
+        ["", "T", "t", "T-1", "T01", "t01", "T1a", "tool0", "0",
+         "T²", "T⁵", "T①"],
     )
     def test_rejects_noncanonical_names(self, name):
         assert parse_tool_name(name) is None
@@ -47,6 +60,9 @@ class TestParseToolName:
 class TestValidateToolNumbers:
     def test_accepts_contiguous_numbering_from_zero(self):
         assert validate_tool_numbers([0, 1, 2]) is None
+
+    def test_accepts_unsorted_contiguous_numbering(self):
+        assert validate_tool_numbers([2, 0, 1]) is None
 
     def test_accepts_single_tool_zero(self):
         assert validate_tool_numbers([0]) is None
@@ -60,44 +76,66 @@ class TestValidateToolNumbers:
     def test_rejects_gap_in_numbering(self):
         assert validate_tool_numbers([0, 2]) is not None
 
+    def test_rejects_duplicate_tool_number(self):
+        assert validate_tool_numbers([0, 0, 1]) is not None
+
+
+class TestValidateDetectPinCoverage:
+    def test_accepts_no_pins_at_all(self):
+        assert validate_detect_pin_coverage([], [0, 1]) is None
+
+    def test_accepts_pins_on_every_tool(self):
+        assert validate_detect_pin_coverage([0, 1], [0, 1]) is None
+
+    def test_rejects_partial_coverage_naming_missing_tools(self):
+        message = validate_detect_pin_coverage([1], [0, 1, 2])
+        assert message is not None
+        assert "T0" in message and "T2" in message
+
+
+class TestValidateToolExtruders:
+    def test_accepts_distinct_extruders(self):
+        assert validate_tool_extruders({0: "extruder", 1: "extruder1"}) is None
+
+    def test_rejects_two_tools_sharing_an_extruder(self):
+        message = validate_tool_extruders(
+            {0: "extruder", 1: "extruder1", 2: "extruder1"}
+        )
+        assert message is not None
+        assert "T1" in message and "T2" in message and "extruder1" in message
+
+
+class TestDescribePinStates:
+    def test_single_state_words(self):
+        assert describe_pin_state(True) == "triggered"
+        assert describe_pin_state(False) == "untriggered"
+
+    def test_reading_lists_tools_in_numeric_order(self):
+        assert (
+            describe_pin_states({1: False, 0: True})
+            == "T0=triggered, T1=untriggered"
+        )
+
 
 class TestResolveDetection:
     def test_exactly_one_untriggered_identifies_that_tool_mounted(self):
-        verdict, mounted, _ = resolve_detection(
-            {0: True, 1: False, 2: True}, [0, 1, 2]
-        )
-        assert (verdict, mounted) == (DETECT_MOUNTED, 1)
+        verdict, detected, _ = resolve_detection({0: True, 1: False, 2: True})
+        assert (verdict, detected) == (DETECT_MOUNTED, 1)
 
-    def test_all_triggered_with_full_coverage_means_no_tool_mounted(self):
-        verdict, mounted, _ = resolve_detection({0: True, 1: True}, [0, 1])
-        assert (verdict, mounted) == (DETECT_NONE, None)
+    def test_all_triggered_means_no_tool_mounted(self):
+        verdict, detected, _ = resolve_detection({0: True, 1: True})
+        assert (verdict, detected) == (DETECT_NONE, None)
 
     def test_multiple_untriggered_is_a_fault(self):
-        verdict, mounted, message = resolve_detection(
-            {0: False, 1: False, 2: True}, [0, 1, 2]
+        verdict, detected, message = resolve_detection(
+            {0: False, 1: False, 2: True}
         )
-        assert (verdict, mounted) == (DETECT_FAULT, None)
+        assert (verdict, detected) == (DETECT_FAULT, None)
         assert "T0" in message and "T1" in message
 
     def test_no_pins_configured_yields_no_pins_verdict(self):
-        verdict, mounted, _ = resolve_detection({}, [0, 1])
-        assert (verdict, mounted) == (DETECT_NO_PINS, None)
-
-    def test_all_triggered_with_partial_coverage_is_a_fault(self):
-        verdict, mounted, message = resolve_detection({1: True}, [0, 1])
-        assert (verdict, mounted) == (DETECT_FAULT, None)
-        assert "T0" in message
-
-    def test_untriggered_pin_with_partial_coverage_still_identifies_tool(self):
-        verdict, mounted, _ = resolve_detection({1: False}, [0, 1])
-        assert (verdict, mounted) == (DETECT_MOUNTED, 1)
-
-    def test_unreported_pin_state_is_a_fault(self):
-        verdict, mounted, message = resolve_detection(
-            {0: None, 1: True}, [0, 1]
-        )
-        assert (verdict, mounted) == (DETECT_FAULT, None)
-        assert "T0" in message
+        verdict, detected, _ = resolve_detection({})
+        assert (verdict, detected) == (DETECT_NO_PINS, None)
 
 
 class TestStateAfterDiscovery:
@@ -121,94 +159,143 @@ class TestStateAfterDiscovery:
             state_after_discovery("half_mounted", None)
 
 
-class TestVerifyMounted:
+class TestVerifyDetected:
     def test_expected_tool_untriggered_and_others_triggered_passes(self):
-        ok, _ = verify_mounted({0: True, 1: False}, 1)
-        assert ok is True
+        assert verify_detected({0: True, 1: False}, 1) is None
 
     def test_expected_tool_still_in_dock_fails(self):
-        ok, detail = verify_mounted({0: True, 1: True}, 1)
-        assert ok is False
-        assert "T1" in detail
+        message = verify_detected({0: True, 1: True}, 1)
+        assert message is not None
+        assert "T1" in message
 
     def test_wrong_tool_untriggered_fails(self):
-        ok, _ = verify_mounted({0: False, 1: True}, 1)
-        assert ok is False
+        message = verify_detected({0: False, 1: True}, 1)
+        assert message is not None
+        assert "T1" in message and "T0" in message
 
     def test_multiple_untriggered_fails(self):
-        ok, _ = verify_mounted({0: False, 1: False}, 1)
-        assert ok is False
+        assert verify_detected({0: False, 1: False}, 1) is not None
 
-    def test_expected_tool_without_pin_passes_when_all_docks_triggered(self):
-        ok, _ = verify_mounted({1: True, 2: True}, 0)
-        assert ok is True
-
-    def test_expected_tool_without_pin_fails_when_a_dock_is_empty(self):
-        ok, _ = verify_mounted({1: False, 2: True}, 0)
-        assert ok is False
-
-    def test_unreported_pin_state_fails(self):
-        ok, detail = verify_mounted({0: None, 1: False}, 1)
-        assert ok is False
-        assert "T0" in detail
+    def test_empty_reading_raises(self):
+        with pytest.raises(ValueError):
+            verify_detected({}, 1)
 
 
 class TestBeginChangeRefusal:
-    def test_ready_allows_a_change(self):
-        assert begin_change_refusal(STATE_READY) is None
+    # Independently chosen matrix: only ready and unknown may start a change.
+    REFUSED = {
+        STATE_UNINITIALIZED: True,
+        STATE_READY: False,
+        STATE_CHANGING: True,
+        STATE_ERROR: True,
+        STATE_UNKNOWN: False,
+    }
 
-    def test_unknown_allows_a_change(self):
-        assert begin_change_refusal(STATE_UNKNOWN) is None
+    @pytest.mark.parametrize("state", ALL_STATES)
+    def test_each_declared_state_has_the_expected_verdict(self, state):
+        refusal = begin_change_refusal(state)
+        assert (refusal is not None) == self.REFUSED[state]
 
-    def test_uninitialized_refuses(self):
-        assert begin_change_refusal(STATE_UNINITIALIZED) is not None
-
-    def test_changing_refuses(self):
-        assert begin_change_refusal(STATE_CHANGING) is not None
-
-    def test_error_refuses(self):
-        assert begin_change_refusal(STATE_ERROR) is not None
-
-    def test_every_declared_state_is_handled(self):
-        for state in ALL_STATES:
-            begin_change_refusal(state)
+    def test_declared_state_list_matches_the_matrix(self):
+        assert sorted(ALL_STATES) == sorted(self.REFUSED)
 
     def test_unlisted_state_raises(self):
         with pytest.raises(ValueError):
             begin_change_refusal("paused")
 
 
+class TestChangeDecision:
+    @pytest.mark.parametrize(
+        "state,active,requested,expected",
+        [
+            (STATE_READY, None, 1, CHANGE_PROCEED),
+            (STATE_READY, 0, 1, CHANGE_PROCEED),
+            (STATE_READY, 1, 1, CHANGE_NOOP),
+            (STATE_UNKNOWN, None, 0, CHANGE_PROCEED),
+            (STATE_UNINITIALIZED, None, 1, CHANGE_REFUSE),
+            (STATE_CHANGING, 0, 1, CHANGE_REFUSE),
+            (STATE_ERROR, None, 0, CHANGE_REFUSE),
+            # Refusal wins over the no-op even for the nominally active tool.
+            (STATE_ERROR, 1, 1, CHANGE_REFUSE),
+            (STATE_CHANGING, 1, 1, CHANGE_REFUSE),
+        ],
+    )
+    def test_decision_matrix(self, state, active, requested, expected):
+        decision, _ = change_decision(state, active, requested)
+        assert decision == expected
+
+    def test_refusal_carries_a_message(self):
+        decision, message = change_decision(STATE_ERROR, None, 0)
+        assert decision == CHANGE_REFUSE
+        assert message
+
+    def test_noop_carries_a_message_naming_the_tool(self):
+        decision, message = change_decision(STATE_READY, 2, 2)
+        assert decision == CHANGE_NOOP
+        assert "T2" in message
+
+
+class TestEvaluateTempWait:
+    def test_zero_target_is_canceled(self):
+        assert evaluate_temp_wait(150.0, 0.0, 2.0) == TEMP_WAIT_CANCELED
+
+    def test_negative_target_is_canceled(self):
+        assert evaluate_temp_wait(150.0, -1.0, 2.0) == TEMP_WAIT_CANCELED
+
+    def test_temp_inside_window_is_done(self):
+        assert evaluate_temp_wait(199.0, 200.0, 2.0) == TEMP_WAIT_DONE
+
+    def test_overshoot_inside_window_is_done(self):
+        assert evaluate_temp_wait(201.5, 200.0, 2.0) == TEMP_WAIT_DONE
+
+    def test_exactly_at_the_window_edge_is_done(self):
+        assert evaluate_temp_wait(198.0, 200.0, 2.0) == TEMP_WAIT_DONE
+
+    def test_below_window_is_waiting(self):
+        assert evaluate_temp_wait(150.0, 200.0, 2.0) == TEMP_WAIT_WAITING
+
+    def test_far_overshoot_is_waiting(self):
+        assert evaluate_temp_wait(210.0, 200.0, 2.0) == TEMP_WAIT_WAITING
+
+
 class TestOffsetLedger:
-    def test_first_apply_returns_the_full_tool_offset(self):
+    def test_first_apply_moves_origin_by_the_full_tool_offset(self):
         ledger = OffsetLedger()
-        assert ledger.delta_to((0.4, -0.2, 0.15)) == (0.4, -0.2, 0.15)
+        new_origin, drift = ledger.plan((0.0, 0.0, 0.0), (0.4, -0.2, 0.15))
+        assert new_origin == (0.4, -0.2, 0.15)
+        assert drift == (0.0, 0.0, 0.0)
 
-    def test_switching_tools_returns_only_the_difference(self):
+    def test_switching_tools_replaces_only_the_tool_component(self):
         ledger = OffsetLedger()
-        ledger.delta_to((1.0, 2.0, 3.0))
-        # hand-derived: (4.0, 4.0, 4.0) minus (1.0, 2.0, 3.0)
-        assert ledger.delta_to((4.0, 4.0, 4.0)) == (3.0, 2.0, 1.0)
+        ledger.commit((1.0, 2.0, 3.0), (1.0, 2.0, 3.0))
+        # hand-derived: origin (1.0, 2.0, 3.05) carries a 0.05 babystep on Z;
+        # swapping the tool component (1.0, 2.0, 3.0) for (4.0, 4.0, 4.0)
+        # must land on (4.0, 4.0, 4.05)
+        new_origin, _ = ledger.plan((1.0, 2.0, 3.05), (4.0, 4.0, 4.0))
+        assert new_origin == pytest.approx((4.0, 4.0, 4.05), abs=1e-12)
 
-    def test_clear_returns_the_negation_of_the_applied_offset(self):
+    def test_clearing_leaves_only_the_outside_component(self):
         ledger = OffsetLedger()
-        ledger.delta_to((0.5, -1.5, 0.25))
-        assert ledger.clear() == (-0.5, 1.5, -0.25)
+        ledger.commit((0.5, -1.5, 0.25), (0.5, -1.5, 0.25))
+        # hand-derived: origin (0.5, -1.5, 0.30) minus the tool component
+        # (0.5, -1.5, 0.25) leaves the 0.05 babystep on Z
+        new_origin, _ = ledger.plan((0.5, -1.5, 0.30), (0.0, 0.0, 0.0))
+        assert new_origin == pytest.approx((0.0, 0.0, 0.05), abs=1e-12)
 
-    def test_clear_when_nothing_applied_is_a_zero_delta(self):
+    def test_same_target_with_unchanged_origin_plans_no_move(self):
         ledger = OffsetLedger()
-        assert ledger.clear() == (0.0, 0.0, 0.0)
+        ledger.commit((1.0, 2.0, 3.0), (1.0, 2.0, 3.0))
+        new_origin, drift = ledger.plan((1.0, 2.0, 3.0), (1.0, 2.0, 3.0))
+        assert new_origin == (1.0, 2.0, 3.0)
+        assert drift == (0.0, 0.0, 0.0)
 
-    def test_apply_clear_sequence_sums_to_zero_leaving_babystep_intact(self):
-        # A babystep offset lives outside the ledger; the ledger's deltas are
-        # applied on top of it, so the babystep survives exactly when the
-        # deltas over a full apply/switch/clear cycle sum to zero.
-        babystep = (0.0, 0.0, 0.05)
-        applied = list(babystep)
+    def test_drift_reports_the_outside_change_since_the_last_command(self):
         ledger = OffsetLedger()
-        for target in ((1.0, 2.0, 3.0), (4.0, 4.0, 4.0)):
-            delta = ledger.delta_to(target)
-            applied = [a + d for a, d in zip(applied, delta)]
-        delta = ledger.clear()
-        applied = [a + d for a, d in zip(applied, delta)]
-        # tolerance: double precision rounding over three delta additions
-        assert applied == pytest.approx([0.0, 0.0, 0.05], abs=1e-12)
+        ledger.commit((1.0, 2.0, 3.0), (1.0, 2.0, 3.0))
+        _, drift = ledger.plan((1.0, 2.0, 3.05), (0.0, 0.0, 0.0))
+        assert drift == pytest.approx((0.0, 0.0, 0.05), abs=1e-12)
+
+    def test_drift_is_zero_before_the_first_command(self):
+        ledger = OffsetLedger()
+        _, drift = ledger.plan((0.0, 0.0, 0.7), (0.0, 0.0, 0.0))
+        assert drift == (0.0, 0.0, 0.0)
