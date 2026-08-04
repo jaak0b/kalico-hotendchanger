@@ -31,6 +31,8 @@ The central design decision is to represent each hotend as a native Kalico heate
 
 `[extruder]` is tool T0: it is the one hotend with a real stepper, so it carries `step_pin`, `dir_pin`, `enable_pin`, and the rest of a normal extruder definition, in addition to heater and sensor options. `[extruder1]` through `[extruderN]` are the remaining tools: they carry heater and sensor options only, with no step pins. Kalico's extruder kinematics module builds a heater-only extruder object for a section with no step pins configured, so these sections get PID control, `PID_CALIBRATE`, sensor configuration, `min_extrude_temp`, and M104/M109/M105 `T<n>` heater resolution entirely through existing Kalico code. Mainsail and Fluidd already display multiple extruder heaters without any plugin-side work. A `[heater_fan]` per hotend, pointed at the corresponding `extruderN` through its `heater` option, gives each dock's hotend fan control tied to that hotend's own temperature.
 
+On disk the plugin is two modules. `hotendchanger.py` holds all logic; `hotendchanger_tool.py` is a loader shim, required because Kalico maps a config section to the module named by the section's first word, so `[hotendchanger_tool Tn]` sections are loaded through a module of exactly that name, which forwards to the tool loader in `hotendchanger.py`. Kalico's config handling also lowercases section names before the plugin sees them, so the `T<n>` suffix is parsed case-insensitively while tool names are always reported as `T<n>`.
+
 This leaves the plugin responsible for exactly the parts that are specific to a toolchanger and that Kalico has no existing concept of:
 
 - Interpreting `T<n>` as a tool change, not just a heater selection.

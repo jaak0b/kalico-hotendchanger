@@ -30,8 +30,15 @@ class TestParseToolName:
         assert parse_tool_name(name) == expected
 
     @pytest.mark.parametrize(
+        "name,expected",
+        [("t0", 0), ("t7", 7), ("t12", 12)],
+    )
+    def test_accepts_lowercased_section_suffixes(self, name, expected):
+        assert parse_tool_name(name) == expected
+
+    @pytest.mark.parametrize(
         "name",
-        ["", "T", "t0", "T-1", "T01", "T1a", "tool0", "0"],
+        ["", "T", "t", "T-1", "T01", "t01", "T1a", "tool0", "0"],
     )
     def test_rejects_noncanonical_names(self, name):
         assert parse_tool_name(name) is None

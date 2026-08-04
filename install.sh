@@ -1,6 +1,6 @@
 #!/bin/sh
-# Symlink hotendchanger.py into a Kalico checkout's klippy/plugins/
-# directory (see docs/design.md).
+# Symlink the hotendchanger plugin modules into a Kalico checkout's
+# klippy/plugins/ directory.
 #
 # Usage: ./install.sh [KALICO_DIR]
 # KALICO_DIR can also be given via the KALICO_DIR environment variable.
@@ -9,12 +9,14 @@
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PLUGIN_SRC="$SCRIPT_DIR/hotendchanger.py"
+PLUGIN_FILES="hotendchanger.py hotendchanger_tool.py"
 
-if [ ! -f "$PLUGIN_SRC" ]; then
-    echo "install.sh: cannot find hotendchanger.py next to this script" >&2
-    exit 1
-fi
+for f in $PLUGIN_FILES; do
+    if [ ! -f "$SCRIPT_DIR/$f" ]; then
+        echo "install.sh: cannot find $f next to this script" >&2
+        exit 1
+    fi
+done
 
 TARGET_DIR="${1:-${KALICO_DIR:-}}"
 
@@ -50,10 +52,11 @@ if [ ! -d "$INSTALL_DIR" ]; then
     echo "install.sh: created $INSTALL_DIR"
 fi
 
-ln -sf "$PLUGIN_SRC" "$INSTALL_DIR/hotendchanger.py" || {
-    echo "install.sh: failed to symlink into $INSTALL_DIR" >&2
-    exit 1
-}
-
-echo "install.sh: linked $PLUGIN_SRC -> $INSTALL_DIR/hotendchanger.py"
+for f in $PLUGIN_FILES; do
+    ln -sf "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f" || {
+        echo "install.sh: failed to symlink $f into $INSTALL_DIR" >&2
+        exit 1
+    }
+    echo "install.sh: linked $SCRIPT_DIR/$f -> $INSTALL_DIR/$f"
+done
 echo "install.sh: restart the klippy service (or firmware restart) to load it"

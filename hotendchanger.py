@@ -1,5 +1,4 @@
-# Hotend changer toolchange plugin; design, Kalico surface provenance and
-# behavioral references are recorded in docs/design.md.
+# Support for hotend-only toolchanger printers
 import logging
 
 STATE_UNINITIALIZED = "uninitialized"
@@ -26,7 +25,9 @@ def format_tool(tool_number):
 
 
 def parse_tool_name(name):
-    if len(name) < 2 or name[0] != "T" or not name[1:].isdigit():
+    # Config section names arrive lowercased by klippy's config handling, so
+    # both "T0" and "t0" are accepted; tool display names are always "T0".
+    if len(name) < 2 or name[0] not in ("T", "t") or not name[1:].isdigit():
         return None
     if name[1:] != str(int(name[1:])):
         return None
@@ -166,13 +167,14 @@ class OffsetLedger:
 class HotendchangerTool:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.name = config.get_name().split(None, 1)[1]
-        self.tool_number = parse_tool_name(self.name)
+        self.section_name = config.get_name()
+        self.tool_number = parse_tool_name(self.section_name.split(None, 1)[1])
         if self.tool_number is None:
             raise config.error(
                 "hotendchanger_tool section names must follow the T<n>"
                 " pattern, got '%s'" % (config.get_name(),)
             )
+        self.name = format_tool(self.tool_number)
         self.extruder_name = config.get("extruder")
         self.offset = [
             config.getfloat("gcode_x_offset", 0.0),
@@ -460,7 +462,7 @@ class Hotendchanger:
             self._apply_tool_offset(tool.offset)
         if gcmd.get_int("SAVE", 0):
             configfile = self.printer.lookup_object("configfile")
-            section = "hotendchanger_tool %s" % (tool.name,)
+            section = tool.section_name
             for axis_index, option in enumerate(
                 ("gcode_x_offset", "gcode_y_offset", "gcode_z_offset")
             ):
