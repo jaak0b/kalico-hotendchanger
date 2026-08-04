@@ -23,11 +23,6 @@ CHANGE_PROCEED = "proceed"
 CHANGE_NOOP = "noop"
 CHANGE_REFUSE = "refuse"
 
-TEMP_WAIT_DONE = "done"
-TEMP_WAIT_WAITING = "waiting"
-TEMP_WAIT_CANCELED = "canceled"
-
-
 def format_tool(tool_number):
     return "T%d" % (tool_number,)
 
@@ -185,14 +180,6 @@ def change_decision(state, active_tool, requested_tool):
             "%s is already the active tool" % (format_tool(requested_tool),),
         )
     return (CHANGE_PROCEED, None)
-
-
-def evaluate_temp_wait(temp, target, tolerance):
-    if target <= 0.0:
-        return TEMP_WAIT_CANCELED
-    if abs(temp - target) <= tolerance:
-        return TEMP_WAIT_DONE
-    return TEMP_WAIT_WAITING
 
 
 class OffsetLedger:
@@ -488,47 +475,20 @@ class Hotendchanger:
             "hotendchanger: waiting for %s to reach %.1fC (within %.1fC)"
             % (extruder_name, target, self.temp_wait_tolerance)
         )
-        # Wait loop per TEMPERATURE_WAIT (klippy/extras/heaters.py:1482-1507)
-        # including its debugoutput skip, but polled here instead of run as
-        # that command because TEMPERATURE_WAIT compares against fixed bounds
-        # and never re-reads the target: a target lowered mid-wait (M104 S0)
-        # would make it wait forever.
-        if self.printer.get_start_args().get("debugoutput") is not None:
-            return
-        canceled = [False]
-
-        def check(eventtime):
-            temp, current_target = heater.get_temp(eventtime)
-            result = evaluate_temp_wait(
-                temp, current_target, self.temp_wait_tolerance
+        # TEMPERATURE_WAIT (Kalico klippy/extras/heaters.py:1482-1507, stock
+        # klippy/extras/heaters.py:367-389) bounds the temperature on both
+        # sides and accepts the extruder section name as SENSOR. Its fixed
+        # window is safe because the gcode mutex is held for the whole tool
+        # change handler, so nothing can change the target mid-wait; shutdown
+        # or a command interrupt aborts the wait's own loop.
+        self.gcode.run_script_from_command(
+            "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.6f MAXIMUM=%.6f"
+            % (
+                extruder_name,
+                target - self.temp_wait_tolerance,
+                target + self.temp_wait_tolerance,
             )
-            if result == TEMP_WAIT_WAITING:
-                return True
-            if result == TEMP_WAIT_DONE:
-                return False
-            if result == TEMP_WAIT_CANCELED:
-                canceled[0] = True
-                return False
-            raise ValueError("unhandled temperature wait result %r" % (result,))
-
-        wait_while = getattr(self.printer, "wait_while", None)
-        if wait_while is not None:
-            wait_while(check)
-        else:
-            # printer.wait_while postdates stock Klipper, so without it the
-            # loop follows stock's own TEMPERATURE_WAIT idiom
-            # (klippy/extras/heaters.py:383-389 in stock: poll while not
-            # printer.is_shutdown(), reactor.pause one second ahead).
-            reactor = self.printer.get_reactor()
-            eventtime = reactor.monotonic()
-            while not self.printer.is_shutdown() and check(eventtime):
-                eventtime = reactor.pause(eventtime + 1.0)
-        if canceled[0]:
-            raise self.printer.command_error(
-                "The target temperature of %s was cleared during the wait."
-                " Set a temperature again, then rerun the tool change."
-                % (extruder_name,)
-            )
+        )
 
     def _do_tool_change(self, gcmd, tool_number):
         decision, message = change_decision(

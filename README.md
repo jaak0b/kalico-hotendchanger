@@ -54,10 +54,9 @@ A `T<n>` command runs, in order:
    not raise, so the paused print stays resumable.
 7. Run `ACTIVATE_EXTRUDER` for the new tool's extruder section, so bare
    `M104`/`M109`/`M105` and E axis bookkeeping follow it.
-8. If the new hotend has a nonzero target temperature, wait until it is
-   within `temp_wait_tolerance` of that target. No target, no wait. The
-   target is re-read while waiting: clearing it (`M104 S0`) aborts the
-   change with an error instead of waiting forever.
+8. If the new hotend has a nonzero target temperature, wait (via
+   `TEMPERATURE_WAIT`) until it is within `temp_wait_tolerance` of that
+   target. No target, no wait.
 9. Apply the new tool's gcode offset and run `after_change_gcode`.
 
 A change that fails partway leaves the plugin in the `error` state with
@@ -168,8 +167,7 @@ dropoff_gcode:
 #   the change waits until its temperature is within this value of the
 #   target, in either direction, so a preheated hotend overshooting on
 #   the way down completes the wait as soon as it re-enters the window.
-#   The target is re-read while waiting; clearing it aborts the change
-#   with an error. Must be above 0. The default is 2.0.
+#   Must be above 0. The default is 2.0.
 
 [hotendchanger_tool T0]
 extruder:

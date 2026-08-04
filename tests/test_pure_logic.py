@@ -14,15 +14,11 @@ from hotendchanger import (
     STATE_READY,
     STATE_UNINITIALIZED,
     STATE_UNKNOWN,
-    TEMP_WAIT_CANCELED,
-    TEMP_WAIT_DONE,
-    TEMP_WAIT_WAITING,
     OffsetLedger,
     begin_change_refusal,
     change_decision,
     describe_pin_state,
     describe_pin_states,
-    evaluate_temp_wait,
     parse_tool_name,
     resolve_detection,
     state_after_discovery,
@@ -233,29 +229,6 @@ class TestChangeDecision:
         decision, message = change_decision(STATE_READY, 2, 2)
         assert decision == CHANGE_NOOP
         assert "T2" in message
-
-
-class TestEvaluateTempWait:
-    def test_zero_target_is_canceled(self):
-        assert evaluate_temp_wait(150.0, 0.0, 2.0) == TEMP_WAIT_CANCELED
-
-    def test_negative_target_is_canceled(self):
-        assert evaluate_temp_wait(150.0, -1.0, 2.0) == TEMP_WAIT_CANCELED
-
-    def test_temp_inside_window_is_done(self):
-        assert evaluate_temp_wait(199.0, 200.0, 2.0) == TEMP_WAIT_DONE
-
-    def test_overshoot_inside_window_is_done(self):
-        assert evaluate_temp_wait(201.5, 200.0, 2.0) == TEMP_WAIT_DONE
-
-    def test_exactly_at_the_window_edge_is_done(self):
-        assert evaluate_temp_wait(198.0, 200.0, 2.0) == TEMP_WAIT_DONE
-
-    def test_below_window_is_waiting(self):
-        assert evaluate_temp_wait(150.0, 200.0, 2.0) == TEMP_WAIT_WAITING
-
-    def test_far_overshoot_is_waiting(self):
-        assert evaluate_temp_wait(210.0, 200.0, 2.0) == TEMP_WAIT_WAITING
 
 
 class TestOffsetLedger:
