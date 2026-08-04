@@ -11,19 +11,17 @@ motor and the part cooling fan stay fixed on the carriage.
   unload, no handoff.
 - **Native heaters, not a parallel abstraction.** Every hotend is a
   standard `[extruderN]` section, so per-hotend PID tuning, `M104`/`M109`
-  `T<n>` dispatch and Mainsail/Fluidd temperature display come from Kalico
+  `T<n>` dispatch and Mainsail/Fluidd temperature display come from Kalico/Klipper
   itself, not from this plugin.
-- **Kalico only.** The plugin installs into Kalico's `klippy/plugins/`
-  directory; stock Klipper is not supported.
 
 ## How it works
 
-Kalico builds a heater-only extruder object for any `[extruderN]` section
+Kalico/Klipper builds a heater-only extruder object for any `[extruderN]` section
 configured without step pins. `[extruder]` is T0 and carries the real
 stepper options; `[extruder1]` and up are the remaining tools with heater
 and sensor options only. That single fact carries most of the design: each
 hotend gets its own PID control, `PID_CALIBRATE`, `min_extrude_temp` and
-web interface readout through existing Kalico code, and a `[heater_fan]`
+web interface readout through existing Kalico/Klipper code, and a `[heater_fan]`
 pointed at each `extruderN` ties every hotend fan to its own hotend's
 temperature.
 
@@ -107,7 +105,7 @@ back through `SET_TOOL_OFFSET`.
 
 ## Install
 
-Requires Kalico and Python 3 with no third-party packages.
+Requires Kalico/Klipper and Python 3 with no third-party packages.
 
 ```
 cd ~
@@ -117,9 +115,7 @@ sh install.sh
 sudo service klipper restart
 ```
 
-`install.sh` symlinks `hotendchanger.py` and `hotendchanger_tool.py` into
-`klippy/plugins/` of the Kalico checkout at `~/klipper` (pass another
-path as an argument). Update
+Update
 manager entry for moonraker.conf:
 
 ```
@@ -262,7 +258,7 @@ heater: extruder1
 ```
 
 `[extruder]` (T0) is a normal full extruder section with step pins;
-`[extruder1]` has no step pins, so Kalico builds it as a heater-only
+`[extruder1]` has no step pins, so Kalico/Klipper builds it as a heater-only
 extruder.
 
 ## Limitations
