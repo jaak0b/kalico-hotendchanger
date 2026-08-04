@@ -48,10 +48,12 @@ A `T<n>` command runs, in order:
    known to be mounted, since there is no dock to return it to.
 5. Run `pickup_gcode` for the new tool.
 6. If detect pins are configured, verify the new tool reads as mounted.
-   A mismatch prints one message naming the expected tool, the actual
-   reading and what to check, pauses the print (through
-   `[pause_resume]`), and leaves the plugin in the error state; it does
-   not raise, so the paused print stays resumable.
+   During a print, a mismatch prints one message naming the expected
+   tool, the actual reading and what to check, pauses the print
+   (through `[pause_resume]`), and leaves the plugin in the error
+   state; it does not raise, so the paused print stays resumable. With
+   no print running, the same diagnostic is raised as a normal command
+   error instead.
 7. Run `ACTIVATE_EXTRUDER` for the new tool's extruder section, so bare
    `M104`/`M109`/`M105` and E axis bookkeeping follow it.
 8. If the new hotend has a nonzero target temperature, wait (via

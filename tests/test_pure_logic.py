@@ -9,6 +9,9 @@ from hotendchanger import (
     DETECT_MOUNTED,
     DETECT_NONE,
     DETECT_NO_PINS,
+    PRINT_STATE_PAUSED,
+    PRINT_STATE_PRINTING,
+    PRINT_STATE_STANDBY,
     STATE_CHANGING,
     STATE_ERROR,
     STATE_READY,
@@ -17,6 +20,8 @@ from hotendchanger import (
     OffsetLedger,
     begin_change_refusal,
     change_decision,
+    classify_print_state,
+    mismatch_pauses,
     describe_pin_state,
     describe_pin_states,
     parse_tool_name,
@@ -229,6 +234,50 @@ class TestChangeDecision:
         decision, message = change_decision(STATE_READY, 2, 2)
         assert decision == CHANGE_NOOP
         assert "T2" in message
+
+
+class TestClassifyPrintState:
+    @pytest.mark.parametrize(
+        "stats_state,expected",
+        [
+            ("printing", PRINT_STATE_PRINTING),
+            ("paused", PRINT_STATE_PAUSED),
+            ("standby", PRINT_STATE_STANDBY),
+            ("complete", PRINT_STATE_STANDBY),
+            ("cancelled", PRINT_STATE_STANDBY),
+            ("error", PRINT_STATE_STANDBY),
+        ],
+    )
+    def test_every_print_stats_state_maps(self, stats_state, expected):
+        assert classify_print_state(False, stats_state, False) == expected
+
+    def test_pause_resume_paused_wins_over_printing(self):
+        assert (
+            classify_print_state(True, "printing", True) == PRINT_STATE_PAUSED
+        )
+
+    def test_no_print_stats_falls_back_to_sd_activity(self):
+        assert classify_print_state(False, None, True) == PRINT_STATE_PRINTING
+        assert classify_print_state(False, None, False) == PRINT_STATE_STANDBY
+
+    def test_unlisted_print_stats_state_raises(self):
+        with pytest.raises(ValueError):
+            classify_print_state(False, "interrupted", False)
+
+
+class TestMismatchPauses:
+    def test_printing_pauses(self):
+        assert mismatch_pauses(PRINT_STATE_PRINTING) is True
+
+    def test_paused_raises_instead(self):
+        assert mismatch_pauses(PRINT_STATE_PAUSED) is False
+
+    def test_standby_raises_instead(self):
+        assert mismatch_pauses(PRINT_STATE_STANDBY) is False
+
+    def test_unlisted_print_state_raises(self):
+        with pytest.raises(ValueError):
+            mismatch_pauses("resuming")
 
 
 class TestOffsetLedger:

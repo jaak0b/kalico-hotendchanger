@@ -23,6 +23,15 @@ CHANGE_PROCEED = "proceed"
 CHANGE_NOOP = "noop"
 CHANGE_REFUSE = "refuse"
 
+PRINT_STATE_PRINTING = "printing"
+PRINT_STATE_PAUSED = "paused"
+PRINT_STATE_STANDBY = "standby"
+
+# The full state set print_stats reports, identical in Kalico
+# (klippy/extras/print_stats.py:46-111) and stock Klipper
+# (klippy/extras/print_stats.py:44-92).
+PRINT_STATS_FINISHED_STATES = ("standby", "complete", "cancelled", "error")
+
 def format_tool(tool_number):
     return "T%d" % (tool_number,)
 
@@ -180,6 +189,32 @@ def change_decision(state, active_tool, requested_tool):
             "%s is already the active tool" % (format_tool(requested_tool),),
         )
     return (CHANGE_PROCEED, None)
+
+
+def classify_print_state(is_paused, print_stats_state, sd_active):
+    if is_paused:
+        return PRINT_STATE_PAUSED
+    if print_stats_state is None:
+        if sd_active:
+            return PRINT_STATE_PRINTING
+        return PRINT_STATE_STANDBY
+    if print_stats_state == "printing":
+        return PRINT_STATE_PRINTING
+    if print_stats_state == "paused":
+        return PRINT_STATE_PAUSED
+    if print_stats_state in PRINT_STATS_FINISHED_STATES:
+        return PRINT_STATE_STANDBY
+    raise ValueError("unhandled print_stats state %r" % (print_stats_state,))
+
+
+def mismatch_pauses(print_state):
+    if print_state == PRINT_STATE_PRINTING:
+        return True
+    if print_state == PRINT_STATE_PAUSED:
+        return False
+    if print_state == PRINT_STATE_STANDBY:
+        return False
+    raise ValueError("unhandled print state %r" % (print_state,))
 
 
 class OffsetLedger:
@@ -453,6 +488,33 @@ class Hotendchanger:
                 % (", ".join(missing),)
             )
 
+    def _print_state(self):
+        # Print activity is read from the same surfaces pause_resume itself
+        # uses, present in both firmwares: pause_resume's is_paused status
+        # (stock klippy/extras/pause_resume.py:41-44), print_stats' state
+        # (stock print_stats.py:44-92, Kalico print_stats.py:46-111), and
+        # virtual_sdcard.is_active() (stock virtual_sdcard.py:116, Kalico
+        # :135; the activity test pause_resume.is_sd_active applies at stock
+        # pause_resume.py:45-46). Each object is optional in config, so each
+        # is reached defensively.
+        eventtime = self.printer.get_reactor().monotonic()
+        pause_resume = self.printer.lookup_object("pause_resume", None)
+        is_paused = bool(
+            pause_resume is not None
+            and pause_resume.get_status(eventtime)["is_paused"]
+        )
+        print_stats = self.printer.lookup_object("print_stats", None)
+        stats_state = (
+            print_stats.get_status(eventtime)["state"]
+            if print_stats is not None
+            else None
+        )
+        virtual_sdcard = self.printer.lookup_object("virtual_sdcard", None)
+        sd_active = bool(
+            virtual_sdcard is not None and virtual_sdcard.is_active()
+        )
+        return classify_print_state(is_paused, stats_state, sd_active)
+
     def _pause_print(self, message):
         if self.printer.lookup_object("pause_resume", None) is None:
             raise self.printer.command_error(
@@ -539,14 +601,20 @@ class Hotendchanger:
                 mismatch = verify_detected(pin_states, tool_number)
                 if mismatch is not None:
                     self.detected_tool = None
-                    outcome = "verify_failed"
-                    self._pause_print(
-                        "Tool change to %s paused the print: %s. Check the"
-                        " hotend seating on the carriage and the dock switch"
-                        " wiring, then run INITIALIZE_HOTENDCHANGER and"
-                        " RESUME." % (new_tool.name, mismatch)
+                    diagnostic = (
+                        "Tool change to %s failed verification: %s. Check"
+                        " the hotend seating on the carriage and the dock"
+                        " switch wiring, then run INITIALIZE_HOTENDCHANGER."
+                        % (new_tool.name, mismatch)
                     )
-                    return
+                    if mismatch_pauses(self._print_state()):
+                        outcome = "verify_failed"
+                        self._pause_print(
+                            "%s The print is paused; RESUME continues it."
+                            % (diagnostic,)
+                        )
+                        return
+                    raise gcmd.error(diagnostic)
                 self.detected_tool = tool_number
             self.gcode.run_script_from_command(
                 "ACTIVATE_EXTRUDER EXTRUDER=%s" % (new_tool.extruder_name,)
