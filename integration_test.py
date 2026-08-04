@@ -33,10 +33,26 @@ CASE_TIMEOUT = 600.0
 # below are logged at.
 KLIPPY_LOG = '_test_.log'
 
-# Kalico's module loader is klippy/printer.py scanning "klippy.plugins.", so
-# the plugin installs there and imports as a klippy submodule; the directory
-# may not exist yet in a fresh checkout and needs a package marker.
-INSTALL_DIR = ('klippy', 'plugins')
+# Where a firmware layout loads modules from, and how its C helper builds.
+# Kalico installs under klippy/plugins/ imported as a klippy submodule (the
+# directory may not exist yet and needs a package marker); stock Klipper
+# loads from klippy/extras/ as a plain package with no marker.
+LAYOUTS = {
+    'kalico': {
+        'install_dir': ('klippy', 'plugins'),
+        'create_package_marker': True,
+        'chelper_code': 'import klippy.chelper; klippy.chelper.get_ffi()',
+        'chelper_cwd': (),
+        'link_klippy_tree': False,
+    },
+    'klipper': {
+        'install_dir': ('klippy', 'extras'),
+        'create_package_marker': False,
+        'chelper_code': 'import chelper; chelper.get_ffi()',
+        'chelper_cwd': ('klippy',),
+        'link_klippy_tree': True,
+    },
+}
 
 # Klipper's gcode dispatcher catches CommandError and nothing else, so any
 # other exception is logged with a traceback and shuts the printer down.
@@ -189,7 +205,7 @@ def check_checkout(raw):
     if not checkout.is_dir():
         raise Failure(
             "Firmware checkout not found: %s. Pass the directory holding "
-            "Kalico's klippy/ and scripts/ directories." % (checkout,))
+            "the firmware's klippy/ and scripts/ directories." % (checkout,))
     needed = [
         checkout / 'klippy',
         checkout / 'scripts' / 'test_klippy.py',
@@ -199,16 +215,28 @@ def check_checkout(raw):
     missing = [str(p) for p in needed if not p.exists()]
     if missing:
         raise Failure(
-            "%s does not look like a Kalico checkout. Missing: %s."
+            "%s does not look like a Kalico or Klipper checkout. Missing: %s."
             % (checkout, ", ".join(missing)))
-    printer_py = checkout / 'klippy' / 'printer.py'
-    if not (printer_py.is_file()
-            and 'klippy.plugins' in printer_py.read_text(errors='replace')):
-        raise Failure(
-            "%s is not a Kalico checkout: it has no klippy/printer.py "
-            "loading klippy.plugins. This plugin targets Kalico only."
-            % (checkout,))
     return checkout
+
+
+def detect_layout(checkout):
+    """Name the firmware layout of a checkout, from the LAYOUTS closed set."""
+    # Kalico's module loader is klippy/printer.py scanning "klippy.plugins."
+    # (printer.py:282-286); the plugins directory itself may not exist yet in
+    # a fresh checkout. Stock Klipper has no printer.py and
+    # klippy/klippy.py:93-103 loads only from klippy/extras/.
+    printer_py = checkout / 'klippy' / 'printer.py'
+    if (printer_py.is_file()
+            and 'klippy.plugins' in printer_py.read_text(errors='replace')):
+        return 'kalico'
+    if ((checkout / 'klippy' / 'klippy.py').is_file()
+            and (checkout / 'klippy' / 'extras').is_dir()):
+        return 'klipper'
+    raise Failure(
+        "%s is neither a Kalico nor a stock Klipper checkout: it has no "
+        "klippy/printer.py loading klippy.plugins, and no klippy/klippy.py "
+        "with a klippy/extras/ directory." % (checkout,))
 
 
 def run_tool(command, cwd, env, what):
@@ -263,18 +291,19 @@ def build_dictionary(checkout, build_dir, dictdir):
     shutil.copyfile(str(built), str(dictdir / DICT_NAME))
 
 
-def build_chelper(checkout, env):
+def build_chelper(checkout, env, layout):
     """Compile klippy's C helper before any case runs.
 
     Kalico's own test/conftest.py calls chelper.get_ffi() at session start for
     the same reason: the first import compiles c_helper.so, and a compiler or
     dependency problem there would otherwise be reported as a failing case.
     """
+    spec = LAYOUTS[layout]
     try:
         run_tool(
-            [sys.executable, '-c',
-             'import klippy.chelper; klippy.chelper.get_ffi()'],
-            checkout, env, "Building klippy's C helper")
+            [sys.executable, '-c', spec['chelper_code']],
+            checkout.joinpath(*spec['chelper_cwd']), env,
+            "Building klippy's C helper")
     except Failure as e:
         raise Failure(
             "%s\nklippy needs a C compiler and its Python dependencies "
@@ -299,14 +328,15 @@ def link_plugin(source, target):
 
 
 @contextlib.contextmanager
-def installed_plugin(checkout):
-    plugins_dir = checkout.joinpath(*INSTALL_DIR)
+def installed_plugin(checkout, layout):
+    spec = LAYOUTS[layout]
+    plugins_dir = checkout.joinpath(*spec['install_dir'])
     package_marker = plugins_dir / '__init__.py'
     created_dir = created_marker = False
     if not plugins_dir.is_dir():
         plugins_dir.mkdir(parents=True)
         created_dir = True
-    if not package_marker.exists():
+    if spec['create_package_marker'] and not package_marker.exists():
         package_marker.touch()
         created_marker = True
     installed = []
@@ -382,13 +412,21 @@ def stage_cases(scratch):
     return staged
 
 
-def run_case(case, checkout, staged, dictdir, workdir, env):
+def run_case(case, checkout, staged, dictdir, workdir, env, layout):
     """Run one case through the firmware's harness. Returns (problems,
     output)."""
     # klippy appends to its log file and the name above is the same for every
     # case, so each case runs in a directory of its own.
     case_dir = workdir / case['test']
     case_dir.mkdir(parents=True, exist_ok=True)
+    if LAYOUTS[layout]['link_klippy_tree']:
+        tree_link = case_dir / 'klippy'
+        if not tree_link.exists():
+            try:
+                os.symlink(str(checkout / 'klippy'), str(tree_link))
+            except OSError as e:
+                return (["the klippy tree could not be linked into %s: %s"
+                         % (case_dir, e)], '')
     command = [
         sys.executable, str(checkout / 'scripts' / 'test_klippy.py'),
         '-k', '-d', str(dictdir), '-t', '.', str(staged / case['test']),
@@ -422,11 +460,11 @@ def run_case(case, checkout, staged, dictdir, workdir, env):
     return problems, output
 
 
-def run_cases(checkout, staged, dictdir, workdir, env, verbose):
+def run_cases(checkout, staged, dictdir, workdir, env, verbose, layout):
     failed = 0
     for case in CASES:
         problems, output = run_case(
-            case, checkout, staged, dictdir, workdir, env)
+            case, checkout, staged, dictdir, workdir, env, layout)
         if problems:
             failed += 1
             report('case %s: FAILED' % (case['name'],))
@@ -447,13 +485,14 @@ def run_cases(checkout, staged, dictdir, workdir, env, verbose):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Run the plugin's config sections and its commands through "
-            "Kalico's own regression harness against a Kalico checkout. "
-            "This is a separate entry point from the unit tests, because it "
-            "needs a checkout, a C compiler and a POSIX host."))
+            "Run the plugin's config sections and its commands through the "
+            "firmware's own regression harness against a Kalico or stock "
+            "Klipper checkout. This is a separate entry point from the unit "
+            "tests, because it needs a checkout, a C compiler and a POSIX "
+            "host."))
     parser.add_argument(
         'checkout',
-        help="path to the Kalico checkout to test the plugin against")
+        help="path to the firmware checkout to test the plugin against")
     parser.add_argument(
         '--dictdir', default=None,
         help=("directory holding %s. It is built from the checkout when it is "
@@ -476,7 +515,9 @@ def main():
                 % (source,))
 
     checkout = check_checkout(args.checkout)
+    layout = detect_layout(checkout)
     report('firmware checkout: %s' % (checkout,))
+    report('firmware layout: %s' % (layout,))
     report('python: %s' % (sys.executable,))
 
     env = os.environ.copy()
@@ -498,14 +539,14 @@ def main():
             build_dictionary(checkout, scratch / 'build', dictdir)
             report('dictionary: %s, built from this checkout'
                    % (dictdir / DICT_NAME,))
-        build_chelper(checkout, env)
+        build_chelper(checkout, env, layout)
         staged = stage_cases(scratch)
         workdir = scratch / 'run'
         workdir.mkdir()
         report()
-        with installed_plugin(checkout):
+        with installed_plugin(checkout, layout):
             failed = run_cases(
-                checkout, staged, dictdir, workdir, env, args.verbose)
+                checkout, staged, dictdir, workdir, env, args.verbose, layout)
     return 1 if failed else 0
 
 

@@ -1,8 +1,9 @@
 # hotendchanger
 
-A Kalico plugin for toolchangers that swap only the hotend: heater block,
-thermistor, nozzle and hotend fan move between docks, while the extruder
-motor and the part cooling fan stay fixed on the carriage.
+A plugin for Kalico and stock Klipper supporting toolchangers that swap
+only the hotend: heater block, thermistor, nozzle and hotend fan move
+between docks, while the extruder motor and the part cooling fan stay
+fixed on the carriage.
 
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
@@ -115,8 +116,13 @@ sh install.sh
 sudo service klipper restart
 ```
 
-Update
-manager entry for moonraker.conf:
+`install.sh` symlinks `hotendchanger.py` and `hotendchanger_tool.py` into
+the checkout at `~/klipper` (pass another path as an argument): into
+`klippy/plugins/` when the checkout's loader supports it (Kalico), into
+`klippy/extras/` otherwise (stock Klipper). On stock Klipper the symlinks
+are untracked files, so git and Moonraker's update manager report the
+checkout as dirty until they are removed. Update manager entry for
+moonraker.conf:
 
 ```
 [update_manager hotendchanger]

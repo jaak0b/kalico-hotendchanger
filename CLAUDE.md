@@ -13,9 +13,10 @@ No filament retract or handoff is involved.
 
 ## The plugin: Python, Kalico klippy plugin
 
-Installed by symlink into Kalico's gitignored `klippy/plugins/` directory (Kalico loads it
-like an extra; config section name = module name). Kalico-only target; no stock-Klipper
-compatibility requirement.
+Installed by symlink into Kalico's gitignored `klippy/plugins/` directory, or stock
+Klipper's `klippy/extras/` (config section name = module name in both). Targets Kalico
+and stock Klipper: firmware differences are capability-detected at runtime (check for
+the surface, fall back otherwise), never firmware-identified.
 
 Commands (repo root):
 

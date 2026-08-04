@@ -20,7 +20,7 @@ jobs:
       - name: Check out the plugin
         uses: actions/checkout@v4
 
-      # Kalico's requirement set pins cffi 1.15.1 and greenlet 2.0.2, whose
+      # Both Kalico requirement sets pin cffi 1.15.1 and greenlet 2.0.2, whose
       # newest wheels are cp311, so the whole workflow stays on 3.11.
       - uses: actions/setup-python@v5
         with:
@@ -46,6 +46,12 @@ jobs:
           - name: Kalico 2026-07-28
             repository: KalicoCrew/kalico
             ref: 5fdf0dd3ee8adba46a2aebea3a87bf507c8faf1d
+          - name: Klipper master
+            repository: Klipper3d/klipper
+            ref: master
+          - name: Klipper v0.13.0
+            repository: Klipper3d/klipper
+            ref: v0.13.0
     steps:
       - name: Check out the plugin
         uses: actions/checkout@v4
@@ -61,6 +67,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Every leg's scripts/klippy-requirements.txt names what klippy needs;
+      # stock Klipper's cffi pin for this interpreter has no wheel and builds
+      # from source against the runner's preinstalled libffi.
       - name: Install klippy's Python requirements
         run: pip install -r firmware/scripts/klippy-requirements.txt
 

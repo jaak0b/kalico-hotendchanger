@@ -511,7 +511,18 @@ class Hotendchanger:
                 return False
             raise ValueError("unhandled temperature wait result %r" % (result,))
 
-        self.printer.wait_while(check)
+        wait_while = getattr(self.printer, "wait_while", None)
+        if wait_while is not None:
+            wait_while(check)
+        else:
+            # printer.wait_while postdates stock Klipper, so without it the
+            # loop follows stock's own TEMPERATURE_WAIT idiom
+            # (klippy/extras/heaters.py:383-389 in stock: poll while not
+            # printer.is_shutdown(), reactor.pause one second ahead).
+            reactor = self.printer.get_reactor()
+            eventtime = reactor.monotonic()
+            while not self.printer.is_shutdown() and check(eventtime):
+                eventtime = reactor.pause(eventtime + 1.0)
         if canceled[0]:
             raise self.printer.command_error(
                 "The target temperature of %s was cleared during the wait."
