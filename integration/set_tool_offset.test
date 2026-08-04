@@ -1,0 +1,8 @@
+# SET_TOOL_OFFSET stores an offset for an inactive tool, and the status
+# readout reports the stored value.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+
+SET_TOOL_OFFSET T=1 X=0.1
+HOTENDCHANGER_STATUS
+M400

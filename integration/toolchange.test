@@ -1,0 +1,12 @@
+# A homed printer changes to T1 (pickup only, since no tool is known
+# mounted), then back to T0 (dropoff of T1, then pickup of T0). Both changes
+# run the dock motion templates and ACTIVATE_EXTRUDER without error.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+
+G28
+T1
+HOTENDCHANGER_STATUS
+T0
+HOTENDCHANGER_STATUS
+M400

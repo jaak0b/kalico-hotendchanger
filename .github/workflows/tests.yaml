@@ -1,0 +1,80 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the plugin
+        uses: actions/checkout@v4
+
+      # Kalico's requirement set pins cffi 1.15.1 and greenlet 2.0.2, whose
+      # newest wheels are cp311, so the whole workflow stays on 3.11.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the test requirements
+        run: pip install -r requirements_test.txt
+
+      - name: Run the unit suite
+        run: python -m pytest tests/ -q
+
+  integration:
+    name: Integration (${{ matrix.firmware.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware:
+          - name: Kalico main
+            repository: KalicoCrew/kalico
+            ref: main
+          - name: Kalico 2026-07-28
+            repository: KalicoCrew/kalico
+            ref: 5fdf0dd3ee8adba46a2aebea3a87bf507c8faf1d
+    steps:
+      - name: Check out the plugin
+        uses: actions/checkout@v4
+
+      - name: Check out the firmware
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.firmware.repository }}
+          ref: ${{ matrix.firmware.ref }}
+          path: firmware
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install klippy's Python requirements
+        run: pip install -r firmware/scripts/klippy-requirements.txt
+
+      - name: Record what builds the firmware and the C helper
+        run: |
+          gcc --version
+          make --version
+          git -C firmware log -1 --format='${{ matrix.firmware.name }} %H %cI %s'
+
+      - name: Run the integration harness
+        run: python integration_test.py firmware
+
+      - name: Name the firmware version that failed
+        if: failure()
+        run: >
+          echo "::error title=Integration harness failed::${{
+          matrix.firmware.name }} at ${{ matrix.firmware.ref }}"

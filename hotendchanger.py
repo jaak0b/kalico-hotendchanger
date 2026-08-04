@@ -374,20 +374,18 @@ class Hotendchanger:
         _, target = heater.get_temp(eventtime)
         if target <= 0.0:
             return
-        # Wait loop pattern from TEMPERATURE_WAIT
-        # (klippy/extras/heaters.py:1482-1507), including the debugoutput
-        # skip so batch test runs do not hang; the window here is symmetric
-        # around the target per docs/design.md so an overshooting preheated
-        # hotend does not stall the wait.
-        if self.printer.get_start_args().get("debugoutput") is not None:
-            return
-        tolerance = self.temp_wait_tolerance
-
-        def check(eventtime):
-            temp, current_target = heater.get_temp(eventtime)
-            return abs(temp - current_target) > tolerance
-
-        self.printer.wait_while(check)
+        # TEMPERATURE_WAIT (klippy/extras/heaters.py:1482-1507) accepts the
+        # extruder section name as SENSOR (registered by heaters.py:1407-1408)
+        # and MINIMUM/MAXIMUM bound both sides, giving the symmetric window
+        # around the target.
+        self.gcode.run_script_from_command(
+            "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.6f MAXIMUM=%.6f"
+            % (
+                extruder_name,
+                target - self.temp_wait_tolerance,
+                target + self.temp_wait_tolerance,
+            )
+        )
 
     def _do_tool_change(self, gcmd, tool_number):
         if tool_number == self.active_tool:

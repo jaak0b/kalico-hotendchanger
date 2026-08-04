@@ -1,0 +1,7 @@
+# SET_TOOL_OFFSET with a tool number no section configures must raise a
+# command error naming the missing tool, not shut the printer down.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+SET_TOOL_OFFSET T=9 X=0.1

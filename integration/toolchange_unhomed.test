@@ -1,0 +1,8 @@
+# T1 on an unhomed printer must raise a command error naming the missing
+# homing, not shut the printer down and not answer "Unknown command". An
+# unregistered T1 would end the run successfully, which SHOULD_FAIL detects.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+T1

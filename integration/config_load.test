@@ -1,0 +1,11 @@
+# The plugin's sections are accepted, T0/T1 and the plugin commands are
+# registered, and the printer reaches Ready, homes and moves.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+
+G28
+HOTENDCHANGER_STATUS
+G1 F6000
+G1 X10 Y10
+G1 Z5
+M400
