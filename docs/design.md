@@ -180,7 +180,7 @@ Every branch over this state enum is written to handle each member explicitly wi
 
 A tool object in template context is a mapping with the keys `number` (the tool number), `name` (`"T0"` style), `extruder` (the extruder section name), and `params` (all `params_*` values defined for that tool, keyed without the prefix).
 
-- `pickup_gcode` and `dropoff_gcode` receive `tool` (the tool being picked up or dropped off) and `params`, a flat shortcut for `tool.params`, so dock motion reads naturally as `{params.dock_x}`.
+- `pickup_gcode` and `dropoff_gcode` receive `tool` (the tool being picked up or dropped off) and `params`, an alias of the same mapping as `tool.params`, so dock motion reads naturally as `{params.dock_x}`.
 - `before_change_gcode` and `after_change_gcode` receive `old_tool` and `new_tool`. `old_tool` is `None` when no tool is mounted (the first change, or a change from a known-empty carriage), so templates must guard accesses like `{old_tool.name if old_tool else "none"}`.
 
 ## Error handling

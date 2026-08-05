@@ -5,6 +5,7 @@
 import argparse
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -204,6 +205,24 @@ class Failure(Exception):
 def report(line=''):
     sys.stdout.write(line + '\n')
     sys.stdout.flush()
+
+
+def check_module_lists():
+    """The module list exists twice by design: install.sh must stay a
+    dependency-free shell script. This check keeps the two lists identical."""
+    install_sh = REPO_DIR / 'install.sh'
+    text = install_sh.read_text(errors='replace')
+    match = re.search(r'^PLUGIN_FILES="([^"]*)"', text, re.MULTILINE)
+    if match is None:
+        raise Failure(
+            "%s no longer defines PLUGIN_FILES; keep its module list and "
+            "this script's PLUGIN_MODULES identical." % (install_sh,))
+    sh_modules = tuple(match.group(1).split())
+    if sh_modules != PLUGIN_MODULES:
+        raise Failure(
+            "module lists diverge: install.sh PLUGIN_FILES=%r, "
+            "integration_test.py PLUGIN_MODULES=%r. Register every plugin "
+            "module in both." % (sh_modules, PLUGIN_MODULES))
 
 
 def check_checkout(raw):
@@ -519,6 +538,7 @@ def main():
             raise Failure(
                 "cannot find %s. Run this script from its own repository."
                 % (source,))
+    check_module_lists()
 
     checkout = check_checkout(args.checkout)
     layout = detect_layout(checkout)

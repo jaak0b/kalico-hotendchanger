@@ -114,8 +114,16 @@ def validate_stepper_carrier(tools_with_stepper):
     )
 
 
+def describe_tool(tool_number):
+    return "none" if tool_number is None else format_tool(tool_number)
+
+
 def describe_pin_state(state):
     return "triggered" if state else "untriggered"
+
+
+def describe_optional_pin(pin, state):
+    return describe_pin_state(state) if pin is not None else None
 
 
 def describe_pin_states(pin_states):
@@ -364,12 +372,6 @@ class OffsetLedger:
 # covers many poll cycles plus transport latency.
 STARTUP_DETECT_DELAY = 0.5
 
-# Delay between finishing motion and reading a cached pin state: the MCU
-# button poll (buttons.py:12, QUERY_TIME=0.002s) plus the async callback
-# delivery (buttons.py:84-93) lag the physical event by a few poll cycles,
-# so 0.05s covers the report path on local transports; the config option
-# detect_report_time raises it for slower transports.
-
 # Delay between requesting the pause and running the PAUSE script, ported
 # from stock klippy/extras/filament_switch_sensor.py:27 (pause_delay
 # default 0.5) as used at :49-53.
@@ -463,6 +465,10 @@ class Hotendchanger:
             buttons.register_buttons(
                 [self.toolhead_detect_pin], self._toolhead_callback
             )
+        # The MCU button poll (buttons.py:12, QUERY_TIME=0.002s) plus the
+        # async callback delivery (buttons.py:84-93) lag the physical event
+        # by a few poll cycles; the default covers local transports, slower
+        # links (CAN) need more.
         self.detect_report_time = config.getfloat(
             "detect_report_time", 0.05, above=0.0
         )
@@ -596,18 +602,25 @@ class Hotendchanger:
         self._run_discovery_guarded("startup detection")
         return self.printer.get_reactor().NEVER
 
+    def _recovery_instruction(self):
+        if self.has_dock_pins:
+            return "run INITIALIZE_HOTENDCHANGER"
+        return "run INITIALIZE_HOTENDCHANGER T=<n> to assert the mounted tool"
+
+    def _fail_background(self, context):
+        logging.exception("hotendchanger: %s failed" % (context,))
+        self.state = STATE_ERROR
+        self.gcode.respond_info(
+            "hotendchanger: %s failed. Check the klippy log for the"
+            " traceback, fix the cause, then %s."
+            % (context, self._recovery_instruction())
+        )
+
     def _run_discovery_guarded(self, trigger):
         try:
             self._run_discovery(self.gcode.run_script)
         except Exception:
-            logging.exception("hotendchanger: %s failed" % (trigger,))
-            self.state = STATE_ERROR
-            self.gcode.respond_info(
-                "hotendchanger: %s failed. Check the klippy log for the"
-                " traceback, fix the cause, then run"
-                " INITIALIZE_HOTENDCHANGER%s."
-                % (trigger, "" if self.has_dock_pins else " T=<n>")
-            )
+            self._fail_background(trigger)
         finally:
             self.discovery_done = True
             self.last_detect_edge = None
@@ -621,13 +634,7 @@ class Hotendchanger:
                 self.detect_timer, eventtime + self.detect_settle_time
             )
         except Exception:
-            logging.exception("hotendchanger: detect edge handling failed")
-            self.state = STATE_ERROR
-            self.gcode.respond_info(
-                "hotendchanger: detect pin handling failed. Check the klippy"
-                " log for the traceback, fix the cause, then run"
-                " INITIALIZE_HOTENDCHANGER."
-            )
+            self._fail_background("detect pin handling")
 
     def _toolhead_callback(self, eventtime, state):
         present = bool(state)
@@ -673,26 +680,14 @@ class Hotendchanger:
                 return reactor.NEVER
             raise ValueError("unhandled settled edge action %r" % (action,))
         except Exception:
-            logging.exception("hotendchanger: detect pin monitoring failed")
-            self.state = STATE_ERROR
-            self.gcode.respond_info(
-                "hotendchanger: detect pin monitoring failed. Check the"
-                " klippy log for the traceback, fix the cause, then run"
-                " INITIALIZE_HOTENDCHANGER."
-            )
+            self._fail_background("detect pin monitoring")
             return reactor.NEVER
 
     def _handle_toolhead_loss(self):
         lost = format_tool(self.active_tool)
         self.detected_tool = None
         self.state = STATE_ERROR
-        if self.has_dock_pins:
-            recovery = "run INITIALIZE_HOTENDCHANGER"
-        else:
-            recovery = (
-                "run INITIALIZE_HOTENDCHANGER T=<n> to assert the re-seated"
-                " tool"
-            )
+        recovery = self._recovery_instruction()
         self.gcode.respond_info(
             "hotendchanger: %s was lost from the toolhead"
             " (toolhead_detect_pin read untriggered for %.1fs). Turning off"
@@ -738,6 +733,24 @@ class Hotendchanger:
             if tool.detect_pin is not None
         }
 
+    def _have_detect_pins(self):
+        return self.has_dock_pins or self.toolhead_detect_pin is not None
+
+    def _sync_stepper(self, motion_queue, script_runner):
+        # SYNC_EXTRUDER_MOTION is keyed EXTRUDER=<section with the stepper>
+        # (Kalico klippy/kinematics/extruder.py:64-69, stock :38-40) and
+        # MOTION_QUEUE accepts a heater-only extruder section: every
+        # PrinterExtruder allocates a trapq (Kalico :240, stock :174) and
+        # sync_to_extruder attaches the stepper to it (Kalico :88-102, stock
+        # :50-66). An empty MOTION_QUEUE detaches the stepper from every
+        # motion queue (the empty-name branch, Kalico :91-94, stock :54-58),
+        # so G1 E moves no motor until the next sync.
+        if self.stepper_extruder_name is not None:
+            script_runner(
+                "SYNC_EXTRUDER_MOTION EXTRUDER=%s MOTION_QUEUE=%s"
+                % (self.stepper_extruder_name, motion_queue)
+            )
+
     def _run_discovery(self, script_runner):
         if not self.discovery_done and self.stepper_extruder_name is not None:
             # The firmware never records the boot-time attachment of the
@@ -745,32 +758,18 @@ class Hotendchanger:
             # Kalico klippy/kinematics/extruder.py:251-252), so one explicit
             # self-sync makes the firmware's motion_queue field authoritative
             # from here on: None afterwards always means detached.
-            script_runner(
-                "SYNC_EXTRUDER_MOTION EXTRUDER=%s MOTION_QUEUE=%s"
-                % (self.stepper_extruder_name, self.stepper_extruder_name)
-            )
+            self._sync_stepper(self.stepper_extruder_name, script_runner)
         verdict, detected, message = resolve_detection(
             self._pin_states(), self.toolhead_state
         )
         self.state, new_active = state_after_discovery(verdict, detected)
         self.detected_tool = detected
         self.gcode.respond_info("hotendchanger detection: %s" % (message,))
-        if verdict == DETECT_MOUNTED:
+        if new_active is not None:
             self._engage_tool(new_active, script_runner)
-        elif verdict == DETECT_NONE:
-            self._disengage_tool(script_runner)
-            self._set_tool_offset((0.0, 0.0, 0.0), script_runner)
-        elif verdict == DETECT_UNIDENTIFIED:
-            self._disengage_tool(script_runner)
-            self._set_tool_offset((0.0, 0.0, 0.0), script_runner)
-        elif verdict == DETECT_FAULT:
-            self._disengage_tool(script_runner)
-            self._set_tool_offset((0.0, 0.0, 0.0), script_runner)
-        elif verdict == DETECT_NO_PINS:
-            self._disengage_tool(script_runner)
-            self._set_tool_offset((0.0, 0.0, 0.0), script_runner)
         else:
-            raise ValueError("unhandled detection verdict %r" % (verdict,))
+            self._disengage_tool(script_runner)
+            self._set_tool_offset((0.0, 0.0, 0.0), script_runner)
 
     def _engage_tool(self, tool_number, script_runner):
         tool = self.tools[tool_number]
@@ -787,7 +786,7 @@ class Hotendchanger:
         self.active_tool = None
         self._host_stepper_attribute(None)
         try:
-            self._detach_stepper(script_runner)
+            self._sync_stepper("", script_runner)
         except Exception:
             logging.exception("hotendchanger: stepper detach failed")
             self.gcode.respond_info(
@@ -804,16 +803,7 @@ class Hotendchanger:
         # (Kalico klippy/kinematics/extruder.py:413-421, stock :281-289); a
         # stepper synced to another motion queue stays there, so the single
         # physical stepper is re-synced on every activation, T0 included.
-        # SYNC_EXTRUDER_MOTION is keyed EXTRUDER=<section with the stepper>
-        # (Kalico extruder.py:64-69, stock :38-40) and MOTION_QUEUE accepts a
-        # heater-only extruder section: every PrinterExtruder allocates a
-        # trapq (Kalico :240, stock :174) and sync_to_extruder attaches the
-        # stepper to it (Kalico :88-102, stock :50-66).
-        if self.stepper_extruder_name is not None:
-            script_runner(
-                "SYNC_EXTRUDER_MOTION EXTRUDER=%s MOTION_QUEUE=%s"
-                % (self.stepper_extruder_name, tool.extruder_name)
-            )
+        self._sync_stepper(tool.extruder_name, script_runner)
         self._apply_pressure_advance(tool, script_runner)
         self._host_stepper_attribute(tool)
 
@@ -869,17 +859,6 @@ class Hotendchanger:
             extruder.extruder_stepper = self.carrier_stepper
             self.pa_host = extruder
 
-    def _detach_stepper(self, script_runner):
-        # An empty MOTION_QUEUE detaches the stepper from every motion queue
-        # (sync_to_extruder's empty-name branch, Kalico
-        # klippy/kinematics/extruder.py:91-94, stock :54-58), so G1 E moves
-        # no motor until the next activation re-syncs it.
-        if self.stepper_extruder_name is not None:
-            script_runner(
-                "SYNC_EXTRUDER_MOTION EXTRUDER=%s MOTION_QUEUE="
-                % (self.stepper_extruder_name,)
-            )
-
     def _set_tool_offset(self, target, script_runner):
         gcode_move = self.printer.lookup_object("gcode_move")
         current = tuple(gcode_move.get_status()["homing_origin"][:3])
@@ -933,12 +912,10 @@ class Hotendchanger:
     def _print_state(self):
         # Print activity is read from the same surfaces pause_resume itself
         # uses, present in both firmwares: pause_resume's is_paused status
-        # (stock klippy/extras/pause_resume.py:41-44), print_stats' state
-        # (stock print_stats.py:44-92, Kalico print_stats.py:46-111), and
-        # virtual_sdcard.is_active() (stock virtual_sdcard.py:116, Kalico
-        # :135; the activity test pause_resume.is_sd_active applies at stock
-        # pause_resume.py:45-46). Each object is optional in config, so each
-        # is reached defensively.
+        # (stock klippy/extras/pause_resume.py:41-44) and is_sd_active
+        # (stock :45-46, Kalico :60-61), and print_stats' state (stock
+        # print_stats.py:44-92, Kalico print_stats.py:46-111). Each object
+        # is optional in config, so each is reached defensively.
         eventtime = self.printer.get_reactor().monotonic()
         pause_resume = self.printer.lookup_object("pause_resume", None)
         is_paused = bool(
@@ -951,11 +928,12 @@ class Hotendchanger:
             if print_stats is not None
             else None
         )
-        virtual_sdcard = self.printer.lookup_object("virtual_sdcard", None)
-        sd_active = bool(
-            virtual_sdcard is not None and virtual_sdcard.is_active()
-        )
+        sd_active = pause_resume is not None and pause_resume.is_sd_active()
         return classify_print_state(is_paused, stats_state, sd_active)
+
+    def _wait_report_window(self):
+        reactor = self.printer.get_reactor()
+        reactor.pause(reactor.monotonic() + self.detect_report_time)
 
     def _settle_pin_reports(self):
         # Templates queue motion; the pins reflect reality only after the
@@ -963,8 +941,7 @@ class Hotendchanger:
         # stock :422) plus the button report path covered by
         # detect_report_time.
         self.printer.lookup_object("toolhead").wait_moves()
-        reactor = self.printer.get_reactor()
-        reactor.pause(reactor.monotonic() + self.detect_report_time)
+        self._wait_report_window()
 
     def _verify_after_motion(self, expected_tool):
         self._settle_pin_reports()
@@ -976,11 +953,14 @@ class Hotendchanger:
         # One bounded re-read: a slow transport can deliver the report later
         # than detect_report_time; a second window rules that out before a
         # failure is declared.
-        reactor = self.printer.get_reactor()
-        reactor.pause(reactor.monotonic() + self.detect_report_time)
+        self._wait_report_window()
         return verify_reading(
             self._pin_states(), self.toolhead_state, expected_tool
         )
+
+    def _abandon_change(self):
+        self._disengage_tool(self.gcode.run_script_from_command)
+        self.state = STATE_ERROR
 
     def _fail_change(self, gcmd, diagnostic):
         self.detected_tool = None
@@ -1046,9 +1026,11 @@ class Hotendchanger:
         old_tool = None
         if self.active_tool is not None:
             old_tool = self.tools[self.active_tool]
+        old_context = old_tool.template_context() if old_tool else None
+        new_context = new_tool.template_context()
         change_context = {
-            "old_tool": old_tool.template_context() if old_tool else None,
-            "new_tool": new_tool.template_context(),
+            "old_tool": old_context,
+            "new_tool": new_context,
         }
         self.state = STATE_CHANGING
         outcome = None
@@ -1060,12 +1042,9 @@ class Hotendchanger:
             if old_tool is not None:
                 self._render_and_run(
                     self.dropoff_template,
-                    {
-                        "tool": old_tool.template_context(),
-                        "params": dict(old_tool.params),
-                    },
+                    {"tool": old_context, "params": old_context["params"]},
                 )
-                if self.has_dock_pins or self.toolhead_detect_pin is not None:
+                if self._have_detect_pins():
                     release_problem = self._verify_after_motion(None)
                     if release_problem is not None:
                         outcome = "verify_failed"
@@ -1079,12 +1058,9 @@ class Hotendchanger:
                         return
             self._render_and_run(
                 self.pickup_template,
-                {
-                    "tool": new_tool.template_context(),
-                    "params": dict(new_tool.params),
-                },
+                {"tool": new_context, "params": new_context["params"]},
             )
-            if self.has_dock_pins or self.toolhead_detect_pin is not None:
+            if self._have_detect_pins():
                 mismatch = self._verify_after_motion(tool_number)
                 if mismatch is not None:
                     outcome = "verify_failed"
@@ -1112,19 +1088,16 @@ class Hotendchanger:
                 self.active_tool = tool_number
                 self.state = STATE_READY
             elif outcome == "verify_failed":
-                self._disengage_tool(self.gcode.run_script_from_command)
-                self.state = STATE_ERROR
+                self._abandon_change()
             elif outcome is None:
                 # An exception (of any kind, BaseException included) left the
                 # change unfinished; the mounted tool is no longer known.
-                self._disengage_tool(self.gcode.run_script_from_command)
-                self.state = STATE_ERROR
+                self._abandon_change()
             else:
                 logging.error(
                     "hotendchanger: unhandled tool change outcome %r", outcome
                 )
-                self._disengage_tool(self.gcode.run_script_from_command)
-                self.state = STATE_ERROR
+                self._abandon_change()
 
     def cmd_SET_TOOL_OFFSET(self, gcmd):
         tool_number = gcmd.get_int("T", minval=0)
@@ -1154,23 +1127,21 @@ class Hotendchanger:
     def cmd_HOTENDCHANGER_STATUS(self, gcmd):
         rows = [
             "active_tool: %s"
-            % ("none" if self.active_tool is None else format_tool(self.active_tool)),
+            % (describe_tool(self.active_tool),),
             "detected_tool: %s"
-            % ("none" if self.detected_tool is None else format_tool(self.detected_tool)),
+            % (describe_tool(self.detected_tool),),
             "state: %s" % (self.state,),
         ]
         for n in sorted(self.tools):
             tool = self.tools[n]
-            if tool.detect_pin is not None:
-                rows.append(
-                    "%s detect_pin: %s"
-                    % (tool.name, describe_pin_state(tool.detect_state))
-                )
-        if self.toolhead_detect_pin is not None:
-            rows.append(
-                "toolhead_detect_pin: %s"
-                % (describe_pin_state(self.toolhead_state),)
-            )
+            reading = describe_optional_pin(tool.detect_pin, tool.detect_state)
+            if reading is not None:
+                rows.append("%s detect_pin: %s" % (tool.name, reading))
+        toolhead_reading = describe_optional_pin(
+            self.toolhead_detect_pin, self.toolhead_state
+        )
+        if toolhead_reading is not None:
+            rows.append("toolhead_detect_pin: %s" % (toolhead_reading,))
         motion_queue = self._stepper_motion_queue()
         rows.append(
             "stepper motion_queue: %s"
@@ -1198,7 +1169,7 @@ class Hotendchanger:
             )
         asserted = gcmd.get_int("T", None, minval=0)
         if asserted is not None:
-            if self._pin_states():
+            if self.has_dock_pins:
                 raise gcmd.error(
                     "Detect pins are configured, so detection determines the"
                     " mounted tool. Run INITIALIZE_HOTENDCHANGER without T."
@@ -1224,8 +1195,7 @@ class Hotendchanger:
                     self.detected_tool = None
                     self.state = STATE_READY
                 else:
-                    self._disengage_tool(self.gcode.run_script_from_command)
-                    self.state = STATE_ERROR
+                    self._abandon_change()
             gcmd.respond_info(
                 "hotendchanger: %s asserted as the mounted tool" % (tool.name,)
             )
@@ -1240,10 +1210,8 @@ class Hotendchanger:
             "active_tool": self.active_tool,
             "detected_tool": self.detected_tool,
             "state": self.state,
-            "toolhead_detect": (
-                describe_pin_state(self.toolhead_state)
-                if self.toolhead_detect_pin is not None
-                else None
+            "toolhead_detect": describe_optional_pin(
+                self.toolhead_detect_pin, self.toolhead_state
             ),
             "stepper_motion_queue": self._stepper_motion_queue(),
             "tools": {
@@ -1253,10 +1221,8 @@ class Hotendchanger:
                     "gcode_x_offset": tool.offset[0],
                     "gcode_y_offset": tool.offset[1],
                     "gcode_z_offset": tool.offset[2],
-                    "detect": (
-                        describe_pin_state(tool.detect_state)
-                        if tool.detect_pin is not None
-                        else None
+                    "detect": describe_optional_pin(
+                        tool.detect_pin, tool.detect_state
                     ),
                 }
                 for n, tool in self.tools.items()
