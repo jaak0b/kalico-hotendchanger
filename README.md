@@ -35,9 +35,17 @@ temperature after pickup.
 
 One motor drives all filament: only `[extruder]` (T0's section) has step
 pins, and on every tool change the plugin re-syncs that stepper to the
-active tool's extruder section with `SYNC_EXTRUDER_MOTION`, so extrusion,
-pressure advance and E bookkeeping follow the active hotend. When no tool
-is mounted the stepper is detached, and extrusion commands move nothing.
+active tool's extruder section with `SYNC_EXTRUDER_MOTION`, so extrusion
+and E bookkeeping follow the active hotend. Whenever no tool is mounted
+(including after any failed change) the stepper is detached, and
+extrusion commands move nothing.
+
+Pressure advance is per tool through the plugin: set `pressure_advance`
+(and optionally `pressure_advance_smooth_time`) in each
+`[hotendchanger_tool]` section, and the plugin programs the stepper at
+every activation. Do not put `pressure_advance` in a heater-only
+`[extruderN]` section; the firmware rejects it as an unused option.
+Tools without their own value use `[extruder]`'s configured one.
 
 ## Tool change sequence
 
@@ -51,9 +59,11 @@ A `T<n>` command runs, in order:
 3. Remove the old tool's gcode offset contribution from the gcode
    origin; babystepping stays.
 4. Run `dropoff_gcode` for the mounted tool. Skipped when no tool is
-   known to be mounted, since there is no dock to return it to. With a
-   `toolhead_detect_pin`, a hotend still held after dropoff fails the
-   change the same way as step 6.
+   known to be mounted, since there is no dock to return it to. With
+   detect pins, a reading that does not resolve to "no tool mounted"
+   after dropoff fails the change the same way as step 6. A `T<n>` is
+   refused up front when the toolhead pin reads a hotend of unknown
+   identity (assert it first with `INITIALIZE_HOTENDCHANGER T=<n>`).
 5. Run `pickup_gcode` for the new tool.
 6. If detect pins are configured, verify the pickup: the dock pins must
    identify the new tool and the toolhead pin must read a mounted
@@ -197,6 +207,11 @@ dropoff_gcode:
 #   While no print is running, how long after the last detect pin
 #   change a manual tool swap may settle before detection re-runs.
 #   Must be above 0. The default is 1.0.
+#detect_report_time: 0.05
+#   Seconds the in-change pin checks wait after motion finishes for the
+#   sensor report to arrive; a failed reading is re-read once after
+#   another window before the change is declared failed. Raise this on
+#   slow transports such as CAN. Must be above 0. The default is 0.05.
 
 [hotendchanger_tool T0]
 extruder:
@@ -218,6 +233,13 @@ extruder:
 #   normalize your switch's polarity to that convention. Either every
 #   tool sets a detect_pin or none does; a mix is a config error. The
 #   default is no dock sensors.
+#pressure_advance:
+#pressure_advance_smooth_time:
+#   Pressure advance used while this tool is active, programmed into
+#   the extruder stepper at every activation. Left out, the tool uses
+#   the values configured on the [extruder] section. Do not set
+#   pressure_advance on a heater-only [extruderN] section; the firmware
+#   rejects it as an unused option.
 #params_dock_x:
 #params_dock_y:
 #params_dock_z:
@@ -253,15 +275,19 @@ console message and sets state to `unknown`. Only the checks during a
 
 With a `toolhead_detect_pin`, the plugin watches the coupling while a
 print is running. If the pin reads no hotend for `detect_settle_time`
-continuously, the plugin pauses the print, turns off all heaters (the
-failure cause is unknown, so extruders and bed all go cold), detaches
-the extruder stepper, and reports the loss once. Re-seat the hotend, run
-`INITIALIZE_HOTENDCHANGER`, then `RESUME`.
+continuously, the plugin reports the loss once, turns off all heaters
+(the failure cause is unknown, so extruders and bed all go cold),
+detaches the extruder stepper, and then pauses the print. Re-seat the
+hotend, run `INITIALIZE_HOTENDCHANGER` (with dock pins) or
+`INITIALIZE_HOTENDCHANGER T=<n>` (without, to name the re-seated tool),
+then `RESUME`.
 
 While no print is running (idle or paused), detect pin changes trigger
 automatic rediscovery `detect_settle_time` after the last change: pull a
 tool off and seat another by hand and the plugin follows, applying the
-new tool's offset and extruder, without `INITIALIZE_HOTENDCHANGER`.
+new tool's offset and extruder, without `INITIALIZE_HOTENDCHANGER`. An
+offset applied while a print is paused survives `RESUME`: the plugin
+shifts the saved pause snapshot along with it.
 
 ### Example config
 

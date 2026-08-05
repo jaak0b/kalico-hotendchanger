@@ -10,15 +10,14 @@ from hotendchanger import (
     DETECT_NONE,
     DETECT_NO_PINS,
     DETECT_UNIDENTIFIED,
-    LOSS_FIRE,
-    LOSS_IDLE,
-    LOSS_WAIT,
+    EDGE_DEFER,
+    EDGE_IDLE,
+    EDGE_LOSS,
+    EDGE_REDISCOVER,
+    EDGE_WAIT,
     PRINT_STATE_PAUSED,
     PRINT_STATE_PRINTING,
     PRINT_STATE_STANDBY,
-    REDISCOVER_CANCEL,
-    REDISCOVER_RUN,
-    REDISCOVER_WAIT,
     STATE_CHANGING,
     STATE_ERROR,
     STATE_READY,
@@ -28,20 +27,18 @@ from hotendchanger import (
     begin_change_refusal,
     change_decision,
     classify_print_state,
-    mismatch_pauses,
     describe_pin_state,
     describe_pin_states,
-    evaluate_rediscovery,
-    evaluate_toolhead_loss,
+    evaluate_settled_edge,
     parse_tool_name,
+    print_state_is_active,
     resolve_detection,
     state_after_discovery,
     validate_detect_pin_coverage,
     validate_stepper_carrier,
     validate_tool_extruders,
     validate_tool_numbers,
-    verify_detected,
-    verify_dropoff_released,
+    verify_reading,
 )
 
 
@@ -207,60 +204,59 @@ class TestStateAfterDiscovery:
             state_after_discovery("half_mounted", None)
 
 
-class TestVerifyDetected:
+class TestVerifyReading:
     def test_expected_tool_untriggered_and_others_triggered_passes(self):
-        assert verify_detected({0: True, 1: False}, None, 1) is None
+        assert verify_reading({0: True, 1: False}, None, 1) is None
 
     def test_expected_tool_still_in_dock_fails(self):
-        message = verify_detected({0: True, 1: True}, None, 1)
+        message = verify_reading({0: True, 1: True}, None, 1)
         assert message is not None
         assert "T1" in message
 
     def test_wrong_tool_untriggered_fails(self):
-        message = verify_detected({0: False, 1: True}, None, 1)
+        message = verify_reading({0: False, 1: True}, None, 1)
         assert message is not None
         assert "T1" in message and "T0" in message
 
     def test_multiple_untriggered_fails(self):
-        assert verify_detected({0: False, 1: False}, None, 1) is not None
+        assert verify_reading({0: False, 1: False}, None, 1) is not None
 
     def test_empty_reading_raises(self):
         with pytest.raises(ValueError):
-            verify_detected({}, None, 1)
+            verify_reading({}, None, 1)
 
     def test_docks_and_toolhead_agreeing_passes(self):
-        assert verify_detected({0: True, 1: False}, True, 1) is None
+        assert verify_reading({0: True, 1: False}, True, 1) is None
 
-    def test_toolhead_absent_after_pickup_fails(self):
-        message = verify_detected({0: True, 1: False}, False, 1)
+    def test_toolhead_absent_after_pickup_fails_with_full_reading(self):
+        message = verify_reading({0: True, 1: False}, False, 1)
         assert message is not None
-        assert "toolhead" in message
+        assert "toolhead_detect_pin=untriggered" in message
+        assert "T0=triggered" in message and "T1=untriggered" in message
 
-    def test_both_checks_failing_names_both(self):
-        message = verify_detected({0: True, 1: True}, False, 1)
-        assert message is not None
-        assert "T1" in message and "toolhead" in message
-
-    def test_toolhead_only_present_passes(self):
-        assert verify_detected({}, True, 1) is None
+    def test_toolhead_only_present_passes_for_any_expected_tool(self):
+        assert verify_reading({}, True, 1) is None
 
     def test_toolhead_only_absent_fails(self):
-        message = verify_detected({}, False, 1)
+        message = verify_reading({}, False, 1)
         assert message is not None
-        assert "toolhead" in message
+        assert "toolhead_detect_pin=untriggered" in message
 
+    def test_expecting_no_tool_passes_when_all_docks_full(self):
+        assert verify_reading({0: True, 1: True}, None, None) is None
 
-class TestVerifyDropoffReleased:
-    def test_no_toolhead_pin_passes(self):
-        assert verify_dropoff_released(None) is None
+    def test_expecting_no_tool_passes_when_toolhead_released(self):
+        assert verify_reading({}, False, None) is None
 
-    def test_released_passes(self):
-        assert verify_dropoff_released(False) is None
-
-    def test_still_held_fails_naming_the_release(self):
-        message = verify_dropoff_released(True)
+    def test_expecting_no_tool_fails_when_toolhead_still_holds(self):
+        message = verify_reading({}, True, None)
         assert message is not None
-        assert "release" in message
+        assert "expected no tool mounted" in message
+
+    def test_expecting_no_tool_fails_when_a_dock_reads_empty(self):
+        message = verify_reading({0: True, 1: False}, None, None)
+        assert message is not None
+        assert "expected no tool mounted" in message and "T1" in message
 
 
 class TestBeginChangeRefusal:
@@ -288,31 +284,42 @@ class TestBeginChangeRefusal:
 
 class TestChangeDecision:
     @pytest.mark.parametrize(
-        "state,active,requested,expected",
+        "state,active,requested,toolhead,expected",
         [
-            (STATE_READY, None, 1, CHANGE_PROCEED),
-            (STATE_READY, 0, 1, CHANGE_PROCEED),
-            (STATE_READY, 1, 1, CHANGE_NOOP),
-            (STATE_UNKNOWN, None, 0, CHANGE_PROCEED),
-            (STATE_UNINITIALIZED, None, 1, CHANGE_REFUSE),
-            (STATE_CHANGING, 0, 1, CHANGE_REFUSE),
-            (STATE_ERROR, None, 0, CHANGE_REFUSE),
+            (STATE_READY, None, 1, None, CHANGE_PROCEED),
+            (STATE_READY, 0, 1, None, CHANGE_PROCEED),
+            (STATE_READY, 1, 1, None, CHANGE_NOOP),
+            (STATE_UNKNOWN, None, 0, None, CHANGE_PROCEED),
+            (STATE_UNINITIALIZED, None, 1, None, CHANGE_REFUSE),
+            (STATE_CHANGING, 0, 1, None, CHANGE_REFUSE),
+            (STATE_ERROR, None, 0, None, CHANGE_REFUSE),
             # Refusal wins over the no-op even for the nominally active tool.
-            (STATE_ERROR, 1, 1, CHANGE_REFUSE),
-            (STATE_CHANGING, 1, 1, CHANGE_REFUSE),
+            (STATE_ERROR, 1, 1, None, CHANGE_REFUSE),
+            (STATE_CHANGING, 1, 1, None, CHANGE_REFUSE),
+            # An unidentified hotend on the toolhead must not be driven into
+            # a dock.
+            (STATE_UNKNOWN, None, 0, True, CHANGE_REFUSE),
+            (STATE_READY, None, 0, True, CHANGE_REFUSE),
+            (STATE_UNKNOWN, None, 0, False, CHANGE_PROCEED),
+            (STATE_READY, 0, 1, True, CHANGE_PROCEED),
         ],
     )
-    def test_decision_matrix(self, state, active, requested, expected):
-        decision, _ = change_decision(state, active, requested)
+    def test_decision_matrix(self, state, active, requested, toolhead, expected):
+        decision, _ = change_decision(state, active, requested, toolhead)
         assert decision == expected
 
     def test_refusal_carries_a_message(self):
-        decision, message = change_decision(STATE_ERROR, None, 0)
+        decision, message = change_decision(STATE_ERROR, None, 0, None)
         assert decision == CHANGE_REFUSE
         assert message
 
+    def test_unidentified_mounted_refusal_names_the_assertion_command(self):
+        decision, message = change_decision(STATE_UNKNOWN, None, 0, True)
+        assert decision == CHANGE_REFUSE
+        assert "INITIALIZE_HOTENDCHANGER T=" in message
+
     def test_noop_carries_a_message_naming_the_tool(self):
-        decision, message = change_decision(STATE_READY, 2, 2)
+        decision, message = change_decision(STATE_READY, 2, 2, None)
         assert decision == CHANGE_NOOP
         assert "T2" in message
 
@@ -332,125 +339,107 @@ class TestValidateStepperCarrier:
         assert "T0" in message and "T2" in message
 
 
-class TestEvaluateToolheadLoss:
+class TestEvaluateSettledEdge:
     def default_args(self, **overrides):
         args = {
-            "toolhead_present": False,
-            "absent_since": 100.0,
             "now": 102.0,
             "settle_time": 1.0,
-            "changer_state": STATE_READY,
-            "print_state": PRINT_STATE_PRINTING,
-            "active_tool": 1,
-            "already_fired": False,
-        }
-        args.update(overrides)
-        return args
-
-    def test_debounced_absence_while_printing_fires(self):
-        assert evaluate_toolhead_loss(**self.default_args()) == LOSS_FIRE
-
-    def test_present_pin_is_idle(self):
-        args = self.default_args(toolhead_present=True)
-        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
-
-    def test_no_recorded_absence_is_idle(self):
-        args = self.default_args(absent_since=None)
-        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
-
-    def test_already_fired_loss_event_stays_idle(self):
-        args = self.default_args(already_fired=True)
-        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
-
-    def test_absence_shorter_than_the_window_waits(self):
-        args = self.default_args(now=100.5)
-        assert evaluate_toolhead_loss(**args) == LOSS_WAIT
-
-    def test_absence_exactly_at_the_window_fires(self):
-        args = self.default_args(now=101.0)
-        assert evaluate_toolhead_loss(**args) == LOSS_FIRE
-
-    @pytest.mark.parametrize(
-        "state", [s for s in ALL_STATES if s != STATE_READY]
-    )
-    def test_every_non_ready_state_suspends_the_monitor(self, state):
-        args = self.default_args(changer_state=state)
-        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
-
-    def test_no_active_tool_is_idle(self):
-        args = self.default_args(active_tool=None)
-        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
-
-    @pytest.mark.parametrize(
-        "print_state", [PRINT_STATE_PAUSED, PRINT_STATE_STANDBY]
-    )
-    def test_only_an_active_print_arms_the_monitor(self, print_state):
-        args = self.default_args(print_state=print_state)
-        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
-
-    def test_unlisted_changer_state_raises(self):
-        args = self.default_args(changer_state="rebooting")
-        with pytest.raises(ValueError):
-            evaluate_toolhead_loss(**args)
-
-    def test_unlisted_print_state_raises(self):
-        args = self.default_args(print_state="resuming")
-        with pytest.raises(ValueError):
-            evaluate_toolhead_loss(**args)
-
-
-class TestEvaluateRediscovery:
-    def default_args(self, **overrides):
-        args = {
             "last_edge": 100.0,
-            "now": 102.0,
-            "settle_time": 1.0,
             "changer_state": STATE_READY,
             "print_state": PRINT_STATE_STANDBY,
+            "active_tool": 1,
+            "absent_since": None,
+            "loss_fired": False,
         }
         args.update(overrides)
         return args
 
-    def test_settled_edge_while_idle_runs(self):
-        assert evaluate_rediscovery(**self.default_args()) == REDISCOVER_RUN
+    def test_settled_edge_while_idle_rediscovers(self):
+        action, wake = evaluate_settled_edge(**self.default_args())
+        assert (action, wake) == (EDGE_REDISCOVER, None)
 
-    def test_settled_edge_while_paused_runs(self):
+    def test_settled_edge_while_paused_rediscovers(self):
         args = self.default_args(print_state=PRINT_STATE_PAUSED)
-        assert evaluate_rediscovery(**args) == REDISCOVER_RUN
+        assert evaluate_settled_edge(**args)[0] == EDGE_REDISCOVER
 
-    def test_recent_edge_waits(self):
+    def test_recent_edge_waits_until_the_settle_window_ends(self):
         args = self.default_args(now=100.5)
-        assert evaluate_rediscovery(**args) == REDISCOVER_WAIT
+        assert evaluate_settled_edge(**args) == (EDGE_WAIT, 101.0)
 
-    def test_no_recorded_edge_cancels(self):
+    def test_no_recorded_edge_is_idle(self):
         args = self.default_args(last_edge=None)
-        assert evaluate_rediscovery(**args) == REDISCOVER_CANCEL
+        assert evaluate_settled_edge(**args) == (EDGE_IDLE, None)
 
-    def test_change_in_progress_cancels(self):
+    def test_change_in_progress_defers_and_rechecks(self):
         args = self.default_args(changer_state=STATE_CHANGING)
-        assert evaluate_rediscovery(**args) == REDISCOVER_CANCEL
+        assert evaluate_settled_edge(**args) == (EDGE_DEFER, 103.0)
 
-    def test_active_print_cancels(self):
+    def test_debounced_absence_while_printing_fires_loss(self):
+        args = self.default_args(
+            print_state=PRINT_STATE_PRINTING, absent_since=100.0
+        )
+        assert evaluate_settled_edge(**args) == (EDGE_LOSS, None)
+
+    def test_short_absence_while_printing_waits(self):
+        args = self.default_args(
+            print_state=PRINT_STATE_PRINTING, absent_since=101.5
+        )
+        assert evaluate_settled_edge(**args) == (EDGE_WAIT, 102.5)
+
+    def test_printing_without_absence_is_idle(self):
         args = self.default_args(print_state=PRINT_STATE_PRINTING)
-        assert evaluate_rediscovery(**args) == REDISCOVER_CANCEL
+        assert evaluate_settled_edge(**args) == (EDGE_IDLE, None)
+
+    def test_already_fired_loss_event_is_idle(self):
+        args = self.default_args(
+            print_state=PRINT_STATE_PRINTING,
+            absent_since=100.0,
+            loss_fired=True,
+        )
+        assert evaluate_settled_edge(**args) == (EDGE_IDLE, None)
+
+    def test_absence_while_printing_without_active_tool_defers(self):
+        args = self.default_args(
+            print_state=PRINT_STATE_PRINTING,
+            absent_since=100.0,
+            active_tool=None,
+        )
+        assert evaluate_settled_edge(**args) == (EDGE_DEFER, 103.0)
+
+    def test_absence_while_printing_in_error_state_defers(self):
+        args = self.default_args(
+            print_state=PRINT_STATE_PRINTING,
+            absent_since=100.0,
+            changer_state=STATE_ERROR,
+        )
+        assert evaluate_settled_edge(**args) == (EDGE_DEFER, 103.0)
+
+    def test_print_ending_inside_the_window_resolves_via_rediscovery(self):
+        # The loss scenario begins while printing; by expiry the print was
+        # cancelled, and the same settled edge must still be answered.
+        args = self.default_args(
+            print_state=PRINT_STATE_STANDBY,
+            absent_since=100.0,
+            last_edge=100.0,
+        )
+        assert evaluate_settled_edge(**args)[0] == EDGE_REDISCOVER
 
     @pytest.mark.parametrize(
-        "state",
-        [STATE_READY, STATE_UNKNOWN, STATE_ERROR, STATE_UNINITIALIZED],
+        "state", sorted(set(ALL_STATES) - {STATE_CHANGING})
     )
     def test_every_non_changing_state_allows_rediscovery(self, state):
         args = self.default_args(changer_state=state)
-        assert evaluate_rediscovery(**args) == REDISCOVER_RUN
+        assert evaluate_settled_edge(**args)[0] == EDGE_REDISCOVER
 
     def test_unlisted_changer_state_raises(self):
         args = self.default_args(changer_state="rebooting")
         with pytest.raises(ValueError):
-            evaluate_rediscovery(**args)
+            evaluate_settled_edge(**args)
 
     def test_unlisted_print_state_raises(self):
         args = self.default_args(print_state="resuming")
         with pytest.raises(ValueError):
-            evaluate_rediscovery(**args)
+            evaluate_settled_edge(**args)
 
 
 class TestClassifyPrintState:
@@ -482,19 +471,19 @@ class TestClassifyPrintState:
             classify_print_state(False, "interrupted", False)
 
 
-class TestMismatchPauses:
-    def test_printing_pauses(self):
-        assert mismatch_pauses(PRINT_STATE_PRINTING) is True
+class TestPrintStateIsActive:
+    def test_printing_is_active(self):
+        assert print_state_is_active(PRINT_STATE_PRINTING) is True
 
-    def test_paused_raises_instead(self):
-        assert mismatch_pauses(PRINT_STATE_PAUSED) is False
+    def test_paused_is_not_active(self):
+        assert print_state_is_active(PRINT_STATE_PAUSED) is False
 
-    def test_standby_raises_instead(self):
-        assert mismatch_pauses(PRINT_STATE_STANDBY) is False
+    def test_standby_is_not_active(self):
+        assert print_state_is_active(PRINT_STATE_STANDBY) is False
 
     def test_unlisted_print_state_raises(self):
         with pytest.raises(ValueError):
-            mismatch_pauses("resuming")
+            print_state_is_active("resuming")
 
 
 class TestOffsetLedger:
