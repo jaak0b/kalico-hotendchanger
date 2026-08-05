@@ -16,8 +16,17 @@ ALL_STATES = (
 
 DETECT_MOUNTED = "mounted"
 DETECT_NONE = "none_mounted"
+DETECT_UNIDENTIFIED = "unidentified_mounted"
 DETECT_FAULT = "fault"
 DETECT_NO_PINS = "no_pins"
+
+LOSS_FIRE = "fire"
+LOSS_WAIT = "wait"
+LOSS_IDLE = "idle"
+
+REDISCOVER_RUN = "run"
+REDISCOVER_WAIT = "wait"
+REDISCOVER_CANCEL = "cancel"
 
 CHANGE_PROCEED = "proceed"
 CHANGE_NOOP = "noop"
@@ -90,6 +99,23 @@ def validate_tool_extruders(extruders_by_tool):
     return None
 
 
+def validate_stepper_carrier(tools_with_stepper):
+    if len(tools_with_stepper) == 1:
+        return None
+    if not tools_with_stepper:
+        return (
+            "no tool's extruder section has a stepper; exactly one extruder"
+            " section must carry the physical stepper (step_pin, dir_pin,"
+            " rotation_distance)"
+        )
+    return (
+        "the extruder sections of %s all have steppers; only one extruder"
+        " section may carry the physical stepper, the others hold heater and"
+        " sensor options only"
+        % (", ".join(format_tool(n) for n in sorted(tools_with_stepper)),)
+    )
+
+
 def describe_pin_state(state):
     return "triggered" if state else "untriggered"
 
@@ -101,22 +127,56 @@ def describe_pin_states(pin_states):
     )
 
 
-def resolve_detection(pin_states):
-    if not pin_states:
+def describe_toolhead_state(toolhead_present):
+    return "toolhead_detect_pin=%s" % (describe_pin_state(toolhead_present),)
+
+
+def resolve_detection(pin_states, toolhead_present):
+    if not pin_states and toolhead_present is None:
         return (
             DETECT_NO_PINS,
             None,
             "no detect pins configured, the mounted tool is unknown",
         )
+    if not pin_states:
+        if toolhead_present:
+            return (
+                DETECT_UNIDENTIFIED,
+                None,
+                "a hotend is mounted on the toolhead (%s) but there are no"
+                " dock pins to identify it; run INITIALIZE_HOTENDCHANGER"
+                " T=<n> to name it" % (describe_toolhead_state(True),),
+            )
+        return (
+            DETECT_NONE,
+            None,
+            "no tool mounted (%s)" % (describe_toolhead_state(False),),
+        )
     reading = describe_pin_states(pin_states)
+    if toolhead_present is not None:
+        reading = "%s, %s" % (reading, describe_toolhead_state(toolhead_present))
     untriggered = sorted(t for t, s in pin_states.items() if not s)
     if len(untriggered) == 1:
+        if toolhead_present is False:
+            return (
+                DETECT_FAULT,
+                None,
+                "%s's dock reads empty but the toolhead pin reads no hotend"
+                " mounted (%s)" % (format_tool(untriggered[0]), reading),
+            )
         return (
             DETECT_MOUNTED,
             untriggered[0],
             "%s detected mounted (%s)" % (format_tool(untriggered[0]), reading),
         )
     if not untriggered:
+        if toolhead_present is True:
+            return (
+                DETECT_FAULT,
+                None,
+                "the toolhead pin reads a hotend mounted but every dock reads"
+                " occupied (%s)" % (reading,),
+            )
         return (
             DETECT_NONE,
             None,
@@ -135,6 +195,8 @@ def state_after_discovery(verdict, detected_tool):
         return (STATE_READY, detected_tool)
     if verdict == DETECT_NONE:
         return (STATE_READY, None)
+    if verdict == DETECT_UNIDENTIFIED:
+        return (STATE_UNKNOWN, None)
     if verdict == DETECT_FAULT:
         return (STATE_UNKNOWN, None)
     if verdict == DETECT_NO_PINS:
@@ -142,21 +204,60 @@ def state_after_discovery(verdict, detected_tool):
     raise ValueError("unhandled detection verdict %r" % (verdict,))
 
 
-def verify_detected(pin_states, expected_tool):
-    verdict, detected, message = resolve_detection(pin_states)
-    if verdict == DETECT_MOUNTED:
-        if detected == expected_tool:
-            return None
-        return "expected %s mounted, but %s" % (format_tool(expected_tool), message)
-    if verdict == DETECT_NONE:
-        return "expected %s mounted, but %s" % (format_tool(expected_tool), message)
-    if verdict == DETECT_FAULT:
-        return "expected %s mounted, but %s" % (format_tool(expected_tool), message)
-    if verdict == DETECT_NO_PINS:
+def verify_detected(pin_states, toolhead_present, expected_tool):
+    if not pin_states and toolhead_present is None:
         # Verification is only reached when detect pins exist, so an empty
         # reading here is a caller bug, not an operator condition.
         raise ValueError("verification requires detect pin readings")
-    raise ValueError("unhandled detection verdict %r" % (verdict,))
+    problems = []
+    if pin_states:
+        verdict, detected, message = resolve_detection(pin_states, None)
+        if verdict == DETECT_MOUNTED:
+            if detected != expected_tool:
+                problems.append(
+                    "expected %s mounted, but %s"
+                    % (format_tool(expected_tool), message)
+                )
+        elif verdict == DETECT_NONE:
+            problems.append(
+                "expected %s mounted, but %s"
+                % (format_tool(expected_tool), message)
+            )
+        elif verdict == DETECT_FAULT:
+            problems.append(
+                "expected %s mounted, but %s"
+                % (format_tool(expected_tool), message)
+            )
+        elif verdict == DETECT_UNIDENTIFIED:
+            raise ValueError(
+                "dock-only resolution returned %r" % (verdict,)
+            )
+        elif verdict == DETECT_NO_PINS:
+            raise ValueError(
+                "dock-only resolution returned %r" % (verdict,)
+            )
+        else:
+            raise ValueError("unhandled detection verdict %r" % (verdict,))
+    if toolhead_present is False:
+        problems.append(
+            "the toolhead reads no hotend mounted after pickup (%s)"
+            % (describe_toolhead_state(False),)
+        )
+    if not problems:
+        return None
+    return "; ".join(problems)
+
+
+def verify_dropoff_released(toolhead_present):
+    if toolhead_present is None:
+        return None
+    if toolhead_present:
+        return (
+            "the toolhead still reads a hotend mounted after dropoff (%s),"
+            " the hotend failed to release"
+            % (describe_toolhead_state(True),)
+        )
+    return None
 
 
 def begin_change_refusal(state):
@@ -217,6 +318,61 @@ def mismatch_pauses(print_state):
     raise ValueError("unhandled print state %r" % (print_state,))
 
 
+def _monitor_conditions_met(changer_state, print_state, active_tool):
+    if changer_state == STATE_READY:
+        pass
+    elif changer_state in ALL_STATES:
+        return False
+    else:
+        raise ValueError("unhandled hotendchanger state %r" % (changer_state,))
+    if active_tool is None:
+        return False
+    if print_state == PRINT_STATE_PRINTING:
+        return True
+    if print_state in (PRINT_STATE_PAUSED, PRINT_STATE_STANDBY):
+        return False
+    raise ValueError("unhandled print state %r" % (print_state,))
+
+
+def evaluate_toolhead_loss(
+    toolhead_present,
+    absent_since,
+    now,
+    settle_time,
+    changer_state,
+    print_state,
+    active_tool,
+    already_fired,
+):
+    if toolhead_present:
+        return LOSS_IDLE
+    if absent_since is None:
+        return LOSS_IDLE
+    if already_fired:
+        return LOSS_IDLE
+    if not _monitor_conditions_met(changer_state, print_state, active_tool):
+        return LOSS_IDLE
+    if now - absent_since < settle_time:
+        return LOSS_WAIT
+    return LOSS_FIRE
+
+
+def evaluate_rediscovery(last_edge, now, settle_time, changer_state, print_state):
+    if last_edge is None:
+        return REDISCOVER_CANCEL
+    if changer_state == STATE_CHANGING:
+        return REDISCOVER_CANCEL
+    if changer_state not in ALL_STATES:
+        raise ValueError("unhandled hotendchanger state %r" % (changer_state,))
+    if print_state == PRINT_STATE_PRINTING:
+        return REDISCOVER_CANCEL
+    if print_state not in (PRINT_STATE_PAUSED, PRINT_STATE_STANDBY):
+        raise ValueError("unhandled print state %r" % (print_state,))
+    if now - last_edge < settle_time:
+        return REDISCOVER_WAIT
+    return REDISCOVER_RUN
+
+
 class OffsetLedger:
     def __init__(self):
         self.tool_component = (0.0, 0.0, 0.0)
@@ -249,6 +405,12 @@ class OffsetLedger:
 # The MCU polls buttons every QUERY_TIME=0.002s (buttons.py:12), so 0.5s
 # covers many poll cycles plus transport latency.
 STARTUP_DETECT_DELAY = 0.5
+
+# Delay between finishing motion and reading a cached pin state: the MCU
+# button poll (buttons.py:12, QUERY_TIME=0.002s) plus the async callback
+# delivery (buttons.py:84-93) lag the physical event by a few poll cycles,
+# so 0.05s covers the report path.
+DETECT_REPORT_DELAY = 0.05
 
 
 class HotendchangerTool:
@@ -284,11 +446,12 @@ class HotendchangerTool:
             self.detect_state = False
             buttons = self.printer.load_object(config, "buttons")
             buttons.register_buttons([self.detect_pin], self._detect_callback)
-        changer = self.printer.load_object(config, "hotendchanger")
-        changer.register_tool(config, self)
+        self.changer = self.printer.load_object(config, "hotendchanger")
+        self.changer.register_tool(config, self)
 
     def _detect_callback(self, eventtime, state):
         self.detect_state = bool(state)
+        self.changer.note_detect_edge(eventtime)
 
     def template_context(self):
         return {
@@ -315,6 +478,28 @@ class Hotendchanger:
         self.temp_wait_tolerance = config.getfloat(
             "temp_wait_tolerance", 2.0, above=0.0
         )
+        self.detect_settle_time = config.getfloat(
+            "detect_settle_time", 1.0, above=0.0
+        )
+        self.toolhead_detect_pin = config.get("toolhead_detect_pin", None)
+        self.toolhead_state = None
+        if self.toolhead_detect_pin is not None:
+            # Same buttons baseline as the per-tool detect pins (see
+            # HotendchangerTool): a pin steady at the normalized 0 level never
+            # reports, and False is that baseline; a hotend mounted at boot
+            # drives the pin to 1, which the MCU's first poll reports as an
+            # edge.
+            self.toolhead_state = False
+            buttons = self.printer.load_object(config, "buttons")
+            buttons.register_buttons(
+                [self.toolhead_detect_pin], self._toolhead_callback
+            )
+        self.toolhead_absent_since = None
+        self.toolhead_loss_fired = False
+        self.last_detect_edge = None
+        self.loss_timer = None
+        self.rediscovery_timer = None
+        self.stepper_extruder_name = None
         self.tools = {}
         self.state = STATE_UNINITIALIZED
         self.active_tool = None
@@ -392,6 +577,7 @@ class Hotendchanger:
         ):
             if message is not None:
                 raise self.printer.config_error(message)
+        stepper_tools = []
         for tool in self.tools.values():
             extruder = self.printer.lookup_object(tool.extruder_name, None)
             if extruder is None:
@@ -404,34 +590,167 @@ class Hotendchanger:
                     "hotendchanger_tool %s names section '%s' which is not a"
                     " heater-bearing extruder" % (tool.name, tool.extruder_name)
                 )
+            if getattr(extruder, "extruder_stepper", None) is not None:
+                stepper_tools.append(tool.tool_number)
+        message = validate_stepper_carrier(stepper_tools)
+        if message is not None:
+            raise self.printer.config_error(message)
+        self.stepper_extruder_name = self.tools[stepper_tools[0]].extruder_name
 
     def _handle_ready(self):
         # In debugoutput batch mode no MCU pushes button reports and the test
         # gcode runs immediately after ready, so discovery runs inline there.
         if self.printer.get_start_args().get("debugoutput") is not None:
-            self._startup_discovery()
+            self._run_discovery_guarded()
             return
         reactor = self.printer.get_reactor()
+        self.loss_timer = reactor.register_timer(self._toolhead_loss_timer)
+        self.rediscovery_timer = reactor.register_timer(
+            self._rediscovery_timer
+        )
         reactor.register_timer(
             self._startup_discovery_timer,
             reactor.monotonic() + STARTUP_DETECT_DELAY,
         )
 
     def _startup_discovery_timer(self, eventtime):
-        self._startup_discovery()
+        self._run_discovery_guarded()
         return self.printer.get_reactor().NEVER
 
-    def _startup_discovery(self):
+    def _run_discovery_guarded(self):
         try:
             self._run_discovery(self.gcode.run_script)
         except Exception:
-            logging.exception("hotendchanger: startup detection failed")
+            logging.exception("hotendchanger: detection failed")
             self.state = STATE_ERROR
             self.gcode.respond_info(
-                "hotendchanger: startup detection failed. Check the klippy"
-                " log for the traceback, fix the cause, then run"
+                "hotendchanger: detection failed. Check the klippy log for"
+                " the traceback, fix the cause, then run"
                 " INITIALIZE_HOTENDCHANGER."
             )
+
+    def note_detect_edge(self, eventtime):
+        try:
+            if self.rediscovery_timer is None:
+                return
+            action = evaluate_rediscovery(
+                eventtime,
+                eventtime,
+                self.detect_settle_time,
+                self.state,
+                self._print_state(),
+            )
+            if action == REDISCOVER_CANCEL:
+                return
+            if action == REDISCOVER_WAIT or action == REDISCOVER_RUN:
+                self.last_detect_edge = eventtime
+                self.printer.get_reactor().update_timer(
+                    self.rediscovery_timer,
+                    eventtime + self.detect_settle_time,
+                )
+                return
+            raise ValueError("unhandled rediscovery action %r" % (action,))
+        except Exception:
+            logging.exception("hotendchanger: detect edge handling failed")
+
+    def _toolhead_callback(self, eventtime, state):
+        try:
+            present = bool(state)
+            self.toolhead_state = present
+            if present:
+                self.toolhead_absent_since = None
+                self.toolhead_loss_fired = False
+            else:
+                self.toolhead_absent_since = eventtime
+                if self.loss_timer is not None:
+                    self.printer.get_reactor().update_timer(
+                        self.loss_timer,
+                        eventtime + self.detect_settle_time,
+                    )
+            self.note_detect_edge(eventtime)
+        except Exception:
+            logging.exception("hotendchanger: toolhead pin handling failed")
+
+    def _toolhead_loss_timer(self, eventtime):
+        reactor = self.printer.get_reactor()
+        try:
+            action = evaluate_toolhead_loss(
+                self.toolhead_state,
+                self.toolhead_absent_since,
+                eventtime,
+                self.detect_settle_time,
+                self.state,
+                self._print_state(),
+                self.active_tool,
+                self.toolhead_loss_fired,
+            )
+            if action == LOSS_IDLE:
+                return reactor.NEVER
+            if action == LOSS_WAIT:
+                return self.toolhead_absent_since + self.detect_settle_time
+            if action == LOSS_FIRE:
+                self.toolhead_loss_fired = True
+                self._handle_toolhead_loss()
+                return reactor.NEVER
+            raise ValueError("unhandled loss action %r" % (action,))
+        except Exception:
+            logging.exception("hotendchanger: toolhead monitor failed")
+            return reactor.NEVER
+
+    def _handle_toolhead_loss(self):
+        lost = format_tool(self.active_tool)
+        self.active_tool = None
+        self.detected_tool = None
+        self.state = STATE_ERROR
+        self.gcode.respond_info(
+            "hotendchanger: %s was lost from the toolhead"
+            " (toolhead_detect_pin read untriggered for %.1fs). Pausing the"
+            " print and turning off all heaters. Re-seat the hotend, run"
+            " INITIALIZE_HOTENDCHANGER, then RESUME."
+            % (lost, self.detect_settle_time)
+        )
+        pause_resume = self.printer.lookup_object("pause_resume", None)
+        if pause_resume is not None:
+            # Pause-from-event pattern per stock
+            # klippy/extras/filament_switch_sensor.py:45-53:
+            # send_pause_command immediately, then the PAUSE script.
+            pause_resume.send_pause_command()
+            self.gcode.run_script("PAUSE\nTURN_OFF_HEATERS")
+        else:
+            self.gcode.respond_info(
+                "hotendchanger: no [pause_resume] section is configured, so"
+                " the print cannot be paused automatically."
+            )
+            self.gcode.run_script("TURN_OFF_HEATERS")
+        self._detach_stepper(self.gcode.run_script)
+
+    def _rediscovery_timer(self, eventtime):
+        reactor = self.printer.get_reactor()
+        try:
+            action = evaluate_rediscovery(
+                self.last_detect_edge,
+                eventtime,
+                self.detect_settle_time,
+                self.state,
+                self._print_state(),
+            )
+            if action == REDISCOVER_WAIT:
+                return self.last_detect_edge + self.detect_settle_time
+            if action == REDISCOVER_CANCEL:
+                self.last_detect_edge = None
+                return reactor.NEVER
+            if action == REDISCOVER_RUN:
+                self.last_detect_edge = None
+                self.gcode.respond_info(
+                    "hotendchanger: detect pins changed while no print is"
+                    " running, re-running detection"
+                )
+                self._run_discovery_guarded()
+                return reactor.NEVER
+            raise ValueError("unhandled rediscovery action %r" % (action,))
+        except Exception:
+            logging.exception("hotendchanger: rediscovery failed")
+            return reactor.NEVER
 
     def _pin_states(self):
         return {
@@ -441,15 +760,50 @@ class Hotendchanger:
         }
 
     def _run_discovery(self, script_runner):
-        verdict, detected, message = resolve_detection(self._pin_states())
+        verdict, detected, message = resolve_detection(
+            self._pin_states(), self.toolhead_state
+        )
         self.state, self.active_tool = state_after_discovery(verdict, detected)
         self.detected_tool = detected
         self.gcode.respond_info("hotendchanger detection: %s" % (message,))
         if self.active_tool is not None:
+            self._activate_extruder(
+                self.tools[self.active_tool].extruder_name, script_runner
+            )
             target = self.tools[self.active_tool].offset
         else:
+            if verdict == DETECT_NONE:
+                self._detach_stepper(script_runner)
             target = (0.0, 0.0, 0.0)
         self._set_tool_offset(target, script_runner)
+
+    def _activate_extruder(self, extruder_name, script_runner):
+        script_runner("ACTIVATE_EXTRUDER EXTRUDER=%s" % (extruder_name,))
+        # ACTIVATE_EXTRUDER switches only the toolhead's active extruder
+        # (Kalico klippy/kinematics/extruder.py:413-421, stock :283-290); a
+        # stepper synced to another motion queue stays there, so the single
+        # physical stepper is re-synced on every activation, T0 included.
+        # SYNC_EXTRUDER_MOTION is keyed EXTRUDER=<section with the stepper>
+        # (Kalico extruder.py:64-69, stock :38-40) and MOTION_QUEUE accepts a
+        # heater-only extruder section: every PrinterExtruder allocates a
+        # trapq (Kalico :240, stock :174) and sync_to_extruder attaches the
+        # stepper to it (Kalico :88-103, stock :50-66).
+        if self.stepper_extruder_name is not None:
+            script_runner(
+                "SYNC_EXTRUDER_MOTION EXTRUDER=%s MOTION_QUEUE=%s"
+                % (self.stepper_extruder_name, extruder_name)
+            )
+
+    def _detach_stepper(self, script_runner):
+        # An empty MOTION_QUEUE detaches the stepper from every motion queue
+        # (sync_to_extruder's empty-name branch, Kalico
+        # klippy/kinematics/extruder.py:91-94, stock :53-57), so G1 E moves
+        # no motor until the next activation re-syncs it.
+        if self.stepper_extruder_name is not None:
+            script_runner(
+                "SYNC_EXTRUDER_MOTION EXTRUDER=%s MOTION_QUEUE="
+                % (self.stepper_extruder_name,)
+            )
 
     def _set_tool_offset(self, target, script_runner):
         gcode_move = self.printer.lookup_object("gcode_move")
@@ -514,6 +868,22 @@ class Hotendchanger:
             virtual_sdcard is not None and virtual_sdcard.is_active()
         )
         return classify_print_state(is_paused, stats_state, sd_active)
+
+    def _settle_pin_reports(self):
+        # Templates queue motion; the pins reflect reality only after the
+        # queued moves finish (M400) plus the button report path covered by
+        # DETECT_REPORT_DELAY.
+        self.gcode.run_script_from_command("M400")
+        reactor = self.printer.get_reactor()
+        reactor.pause(reactor.monotonic() + DETECT_REPORT_DELAY)
+
+    def _fail_verification(self, gcmd, diagnostic):
+        if mismatch_pauses(self._print_state()):
+            self._pause_print(
+                "%s The print is paused; RESUME continues it." % (diagnostic,)
+            )
+            return
+        raise gcmd.error(diagnostic)
 
     def _pause_print(self, message):
         if self.printer.lookup_object("pause_resume", None) is None:
@@ -589,6 +959,22 @@ class Hotendchanger:
                         "params": dict(old_tool.params),
                     },
                 )
+                if self.toolhead_detect_pin is not None:
+                    self._settle_pin_reports()
+                    release_problem = verify_dropoff_released(
+                        self.toolhead_state
+                    )
+                    if release_problem is not None:
+                        self.detected_tool = None
+                        outcome = "verify_failed"
+                        self._fail_verification(
+                            gcmd,
+                            "Tool change to %s failed after dropoff of %s:"
+                            " %s. Check the dock and the coupling, then run"
+                            " INITIALIZE_HOTENDCHANGER."
+                            % (new_tool.name, old_tool.name, release_problem),
+                        )
+                        return
             self._render_and_run(
                 self.pickup_template,
                 {
@@ -596,28 +982,28 @@ class Hotendchanger:
                     "params": dict(new_tool.params),
                 },
             )
-            pin_states = self._pin_states()
-            if pin_states:
-                mismatch = verify_detected(pin_states, tool_number)
+            has_dock_pins = bool(self._pin_states())
+            if has_dock_pins or self.toolhead_detect_pin is not None:
+                self._settle_pin_reports()
+                pin_states = self._pin_states()
+                mismatch = verify_detected(
+                    pin_states, self.toolhead_state, tool_number
+                )
                 if mismatch is not None:
                     self.detected_tool = None
-                    diagnostic = (
+                    outcome = "verify_failed"
+                    self._fail_verification(
+                        gcmd,
                         "Tool change to %s failed verification: %s. Check"
                         " the hotend seating on the carriage and the dock"
                         " switch wiring, then run INITIALIZE_HOTENDCHANGER."
-                        % (new_tool.name, mismatch)
+                        % (new_tool.name, mismatch),
                     )
-                    if mismatch_pauses(self._print_state()):
-                        outcome = "verify_failed"
-                        self._pause_print(
-                            "%s The print is paused; RESUME continues it."
-                            % (diagnostic,)
-                        )
-                        return
-                    raise gcmd.error(diagnostic)
-                self.detected_tool = tool_number
-            self.gcode.run_script_from_command(
-                "ACTIVATE_EXTRUDER EXTRUDER=%s" % (new_tool.extruder_name,)
+                    return
+                if pin_states:
+                    self.detected_tool = tool_number
+            self._activate_extruder(
+                new_tool.extruder_name, self.gcode.run_script_from_command
             )
             self._wait_for_temperature(new_tool.extruder_name)
             self._set_tool_offset(
@@ -684,6 +1070,16 @@ class Hotendchanger:
                     "%s detect_pin: %s"
                     % (tool.name, describe_pin_state(tool.detect_state))
                 )
+        if self.toolhead_detect_pin is not None:
+            rows.append(
+                "toolhead_detect_pin: %s"
+                % (describe_pin_state(self.toolhead_state),)
+            )
+        motion_queue = self._stepper_motion_queue()
+        rows.append(
+            "stepper motion_queue: %s"
+            % ("none" if motion_queue is None else motion_queue,)
+        )
         for n in sorted(self.tools):
             tool = self.tools[n]
             rows.append(
@@ -716,10 +1112,19 @@ class Hotendchanger:
                     "no hotendchanger_tool %s configured"
                     % (format_tool(asserted),)
                 )
+            if self.toolhead_state is False:
+                raise gcmd.error(
+                    "The toolhead_detect_pin reads untriggered, so no hotend"
+                    " is mounted; %s cannot be asserted as the mounted tool."
+                    % (format_tool(asserted),)
+                )
             tool = self.tools[asserted]
             self.active_tool = asserted
             self.detected_tool = None
             self.state = STATE_READY
+            self._activate_extruder(
+                tool.extruder_name, self.gcode.run_script_from_command
+            )
             self._set_tool_offset(
                 tool.offset, self.gcode.run_script_from_command
             )
@@ -729,11 +1134,27 @@ class Hotendchanger:
             return
         self._run_discovery(self.gcode.run_script_from_command)
 
+    def _stepper_motion_queue(self):
+        if self.stepper_extruder_name is None:
+            return None
+        extruder = self.printer.lookup_object(self.stepper_extruder_name, None)
+        stepper = getattr(extruder, "extruder_stepper", None)
+        if stepper is None:
+            return None
+        eventtime = self.printer.get_reactor().monotonic()
+        return stepper.get_status(eventtime)["motion_queue"]
+
     def get_status(self, eventtime):
         return {
             "active_tool": self.active_tool,
             "detected_tool": self.detected_tool,
             "state": self.state,
+            "toolhead_detect": (
+                describe_pin_state(self.toolhead_state)
+                if self.toolhead_detect_pin is not None
+                else None
+            ),
+            "stepper_motion_queue": self._stepper_motion_queue(),
             "tools": {
                 tool.name: {
                     "number": n,

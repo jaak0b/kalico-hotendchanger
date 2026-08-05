@@ -29,9 +29,15 @@ temperature.
 The plugin adds only what a toolchanger needs on top: `T<n>` commands that
 run your dock motion templates, per-tool gcode offsets that replace only
 the tool's own component of the gcode origin (your babystepping is
-preserved), tracking of which tool is mounted, optional dock sensors to
-confirm it, and a wait for the new hotend to reach its target temperature
-after pickup.
+preserved), tracking of which tool is mounted, optional dock and toolhead
+sensors to confirm it, and a wait for the new hotend to reach its target
+temperature after pickup.
+
+One motor drives all filament: only `[extruder]` (T0's section) has step
+pins, and on every tool change the plugin re-syncs that stepper to the
+active tool's extruder section with `SYNC_EXTRUDER_MOTION`, so extrusion,
+pressure advance and E bookkeeping follow the active hotend. When no tool
+is mounted the stepper is detached, and extrusion commands move nothing.
 
 ## Tool change sequence
 
@@ -45,17 +51,21 @@ A `T<n>` command runs, in order:
 3. Remove the old tool's gcode offset contribution from the gcode
    origin; babystepping stays.
 4. Run `dropoff_gcode` for the mounted tool. Skipped when no tool is
-   known to be mounted, since there is no dock to return it to.
+   known to be mounted, since there is no dock to return it to. With a
+   `toolhead_detect_pin`, a hotend still held after dropoff fails the
+   change the same way as step 6.
 5. Run `pickup_gcode` for the new tool.
-6. If detect pins are configured, verify the new tool reads as mounted.
-   During a print, a mismatch prints one message naming the expected
-   tool, the actual reading and what to check, pauses the print
-   (through `[pause_resume]`), and leaves the plugin in the error
+6. If detect pins are configured, verify the pickup: the dock pins must
+   identify the new tool and the toolhead pin must read a mounted
+   hotend, whichever exist. During a print, a failure prints one
+   message naming each failed check and the raw readings, pauses the
+   print (through `[pause_resume]`), and leaves the plugin in the error
    state; it does not raise, so the paused print stays resumable. With
    no print running, the same diagnostic is raised as a normal command
    error instead.
 7. Run `ACTIVATE_EXTRUDER` for the new tool's extruder section, so bare
-   `M104`/`M109`/`M105` and E axis bookkeeping follow it.
+   `M104`/`M109`/`M105` and E axis bookkeeping follow it, and re-sync
+   the extruder stepper to that section's motion queue.
 8. If the new hotend has a nonzero target temperature, wait (via
    `TEMPERATURE_WAIT`) until it is within `temp_wait_tolerance` of that
    target. No target, no wait.
@@ -80,8 +90,9 @@ tool is active, the new offset is applied immediately. With `SAVE=1` the
 values are staged so a subsequent `SAVE_CONFIG` persists them.
 
 `HOTENDCHANGER_STATUS`: print labeled rows: active tool, detected tool,
-state, each configured detect pin's reading, and each tool's current
-offset and extruder section.
+state, each configured detect pin's reading, the toolhead detect pin's
+reading, the extruder stepper's motion queue (`none` when detached), and
+each tool's current offset and extruder section.
 
 `INITIALIZE_HOTENDCHANGER [T=<n>]`: re-run detection from the configured
 detect pins. Run it after moving or servicing a tool by hand, or to clear
@@ -92,10 +103,13 @@ its offset. With detect pins configured `T=` is refused, since detection
 determines the mounted tool.
 
 Macros and the web interface can read `printer.hotendchanger`:
-`active_tool` and `detected_tool` (tool numbers or null), `state`, and a
-`tools` dictionary keyed by tool name (`"T0"` style) whose entries carry
-`number`, `extruder`, `gcode_x_offset`, `gcode_y_offset`,
-`gcode_z_offset` and `detect` (the pin reading, or null without a pin).
+`active_tool` and `detected_tool` (tool numbers or null), `state`,
+`toolhead_detect` (the toolhead pin reading, or null without the pin),
+`stepper_motion_queue` (the extruder section the stepper is synced to,
+or null when detached), and a `tools` dictionary keyed by tool name
+(`"T0"` style) whose entries carry `number`, `extruder`,
+`gcode_x_offset`, `gcode_y_offset`, `gcode_z_offset` and `detect` (the
+pin reading, or null without a pin).
 
 ## Nozzle offset calibration
 
@@ -170,6 +184,19 @@ dropoff_gcode:
 #   target, in either direction, so a preheated hotend overshooting on
 #   the way down completes the wait as soon as it re-enters the window.
 #   Must be above 0. The default is 2.0.
+#toolhead_detect_pin:
+#   Endstop-style pin reading whether some hotend is mounted on the
+#   toolhead; triggered means a hotend is held. The pin cannot tell
+#   which tool. It may be used with or without per-tool detect_pin
+#   sensors. Normalize polarity with the usual "!" prefix. The default
+#   is no toolhead sensor.
+#detect_settle_time: 1.0
+#   Seconds. While printing, how long toolhead_detect_pin must read
+#   untriggered continuously before the tool-loss response fires (a
+#   contact bounce filter for the coupling under print vibration).
+#   While no print is running, how long after the last detect pin
+#   change a manual tool swap may settle before detection re-runs.
+#   Must be above 0. The default is 1.0.
 
 [hotendchanger_tool T0]
 extruder:
@@ -209,11 +236,32 @@ dock identifies that tool as mounted on the carriage; all docks
 triggered means no tool is mounted; more than one untriggered dock is a
 fault.
 
+The optional `toolhead_detect_pin` reads whether some hotend is held on
+the toolhead, without identifying which. Combined with dock pins, the
+readings must agree (a contradiction is a fault). Alone, a triggered
+reading means a mounted tool of unknown identity: run
+`INITIALIZE_HOTENDCHANGER T=<n>` to name it, and note the command
+refuses an assertion while the pin reads untriggered.
+
 Detection runs automatically shortly after startup, so the active tool
 is known before the first print. Startup detection and
 `INITIALIZE_HOTENDCHANGER` are pure discovery: a fault there prints a
-console message and sets state to `unknown`. Only the verification after
-a `T<n>` change pauses the print on a mismatch.
+console message and sets state to `unknown`. Only the checks during a
+`T<n>` change pause the print on a mismatch.
+
+### Tool loss protection and manual swaps
+
+With a `toolhead_detect_pin`, the plugin watches the coupling while a
+print is running. If the pin reads no hotend for `detect_settle_time`
+continuously, the plugin pauses the print, turns off all heaters (the
+failure cause is unknown, so extruders and bed all go cold), detaches
+the extruder stepper, and reports the loss once. Re-seat the hotend, run
+`INITIALIZE_HOTENDCHANGER`, then `RESUME`.
+
+While no print is running (idle or paused), detect pin changes trigger
+automatic rediscovery `detect_settle_time` after the last change: pull a
+tool off and seat another by hand and the plugin follows, applying the
+new tool's offset and extruder, without `INITIALIZE_HOTENDCHANGER`.
 
 ### Example config
 

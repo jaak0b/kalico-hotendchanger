@@ -9,9 +9,16 @@ from hotendchanger import (
     DETECT_MOUNTED,
     DETECT_NONE,
     DETECT_NO_PINS,
+    DETECT_UNIDENTIFIED,
+    LOSS_FIRE,
+    LOSS_IDLE,
+    LOSS_WAIT,
     PRINT_STATE_PAUSED,
     PRINT_STATE_PRINTING,
     PRINT_STATE_STANDBY,
+    REDISCOVER_CANCEL,
+    REDISCOVER_RUN,
+    REDISCOVER_WAIT,
     STATE_CHANGING,
     STATE_ERROR,
     STATE_READY,
@@ -24,13 +31,17 @@ from hotendchanger import (
     mismatch_pauses,
     describe_pin_state,
     describe_pin_states,
+    evaluate_rediscovery,
+    evaluate_toolhead_loss,
     parse_tool_name,
     resolve_detection,
     state_after_discovery,
     validate_detect_pin_coverage,
+    validate_stepper_carrier,
     validate_tool_extruders,
     validate_tool_numbers,
     verify_detected,
+    verify_dropoff_released,
 )
 
 
@@ -120,23 +131,53 @@ class TestDescribePinStates:
 
 class TestResolveDetection:
     def test_exactly_one_untriggered_identifies_that_tool_mounted(self):
-        verdict, detected, _ = resolve_detection({0: True, 1: False, 2: True})
+        verdict, detected, _ = resolve_detection(
+            {0: True, 1: False, 2: True}, None
+        )
         assert (verdict, detected) == (DETECT_MOUNTED, 1)
 
     def test_all_triggered_means_no_tool_mounted(self):
-        verdict, detected, _ = resolve_detection({0: True, 1: True})
+        verdict, detected, _ = resolve_detection({0: True, 1: True}, None)
         assert (verdict, detected) == (DETECT_NONE, None)
 
     def test_multiple_untriggered_is_a_fault(self):
         verdict, detected, message = resolve_detection(
-            {0: False, 1: False, 2: True}
+            {0: False, 1: False, 2: True}, None
         )
         assert (verdict, detected) == (DETECT_FAULT, None)
         assert "T0" in message and "T1" in message
 
     def test_no_pins_configured_yields_no_pins_verdict(self):
-        verdict, detected, _ = resolve_detection({})
+        verdict, detected, _ = resolve_detection({}, None)
         assert (verdict, detected) == (DETECT_NO_PINS, None)
+
+    def test_toolhead_present_confirms_the_single_empty_dock(self):
+        verdict, detected, _ = resolve_detection({0: True, 1: False}, True)
+        assert (verdict, detected) == (DETECT_MOUNTED, 1)
+
+    def test_toolhead_absent_with_all_docks_full_means_no_tool(self):
+        verdict, detected, _ = resolve_detection({0: True, 1: True}, False)
+        assert (verdict, detected) == (DETECT_NONE, None)
+
+    def test_toolhead_absent_contradicting_an_empty_dock_is_a_fault(self):
+        verdict, detected, message = resolve_detection(
+            {0: True, 1: False}, False
+        )
+        assert (verdict, detected) == (DETECT_FAULT, None)
+        assert "T1" in message
+
+    def test_toolhead_present_contradicting_full_docks_is_a_fault(self):
+        verdict, detected, _ = resolve_detection({0: True, 1: True}, True)
+        assert (verdict, detected) == (DETECT_FAULT, None)
+
+    def test_toolhead_only_present_is_unidentified_mounted(self):
+        verdict, detected, message = resolve_detection({}, True)
+        assert (verdict, detected) == (DETECT_UNIDENTIFIED, None)
+        assert "INITIALIZE_HOTENDCHANGER" in message
+
+    def test_toolhead_only_absent_means_no_tool(self):
+        verdict, detected, _ = resolve_detection({}, False)
+        assert (verdict, detected) == (DETECT_NONE, None)
 
 
 class TestStateAfterDiscovery:
@@ -155,6 +196,12 @@ class TestStateAfterDiscovery:
             None,
         )
 
+    def test_unidentified_mounted_yields_unknown(self):
+        assert state_after_discovery(DETECT_UNIDENTIFIED, None) == (
+            STATE_UNKNOWN,
+            None,
+        )
+
     def test_unlisted_verdict_raises(self):
         with pytest.raises(ValueError):
             state_after_discovery("half_mounted", None)
@@ -162,24 +209,58 @@ class TestStateAfterDiscovery:
 
 class TestVerifyDetected:
     def test_expected_tool_untriggered_and_others_triggered_passes(self):
-        assert verify_detected({0: True, 1: False}, 1) is None
+        assert verify_detected({0: True, 1: False}, None, 1) is None
 
     def test_expected_tool_still_in_dock_fails(self):
-        message = verify_detected({0: True, 1: True}, 1)
+        message = verify_detected({0: True, 1: True}, None, 1)
         assert message is not None
         assert "T1" in message
 
     def test_wrong_tool_untriggered_fails(self):
-        message = verify_detected({0: False, 1: True}, 1)
+        message = verify_detected({0: False, 1: True}, None, 1)
         assert message is not None
         assert "T1" in message and "T0" in message
 
     def test_multiple_untriggered_fails(self):
-        assert verify_detected({0: False, 1: False}, 1) is not None
+        assert verify_detected({0: False, 1: False}, None, 1) is not None
 
     def test_empty_reading_raises(self):
         with pytest.raises(ValueError):
-            verify_detected({}, 1)
+            verify_detected({}, None, 1)
+
+    def test_docks_and_toolhead_agreeing_passes(self):
+        assert verify_detected({0: True, 1: False}, True, 1) is None
+
+    def test_toolhead_absent_after_pickup_fails(self):
+        message = verify_detected({0: True, 1: False}, False, 1)
+        assert message is not None
+        assert "toolhead" in message
+
+    def test_both_checks_failing_names_both(self):
+        message = verify_detected({0: True, 1: True}, False, 1)
+        assert message is not None
+        assert "T1" in message and "toolhead" in message
+
+    def test_toolhead_only_present_passes(self):
+        assert verify_detected({}, True, 1) is None
+
+    def test_toolhead_only_absent_fails(self):
+        message = verify_detected({}, False, 1)
+        assert message is not None
+        assert "toolhead" in message
+
+
+class TestVerifyDropoffReleased:
+    def test_no_toolhead_pin_passes(self):
+        assert verify_dropoff_released(None) is None
+
+    def test_released_passes(self):
+        assert verify_dropoff_released(False) is None
+
+    def test_still_held_fails_naming_the_release(self):
+        message = verify_dropoff_released(True)
+        assert message is not None
+        assert "release" in message
 
 
 class TestBeginChangeRefusal:
@@ -234,6 +315,142 @@ class TestChangeDecision:
         decision, message = change_decision(STATE_READY, 2, 2)
         assert decision == CHANGE_NOOP
         assert "T2" in message
+
+
+class TestValidateStepperCarrier:
+    def test_exactly_one_stepper_carrier_passes(self):
+        assert validate_stepper_carrier([0]) is None
+
+    def test_no_stepper_carrier_fails(self):
+        message = validate_stepper_carrier([])
+        assert message is not None
+        assert "step_pin" in message
+
+    def test_multiple_stepper_carriers_fails_naming_them(self):
+        message = validate_stepper_carrier([0, 2])
+        assert message is not None
+        assert "T0" in message and "T2" in message
+
+
+class TestEvaluateToolheadLoss:
+    def default_args(self, **overrides):
+        args = {
+            "toolhead_present": False,
+            "absent_since": 100.0,
+            "now": 102.0,
+            "settle_time": 1.0,
+            "changer_state": STATE_READY,
+            "print_state": PRINT_STATE_PRINTING,
+            "active_tool": 1,
+            "already_fired": False,
+        }
+        args.update(overrides)
+        return args
+
+    def test_debounced_absence_while_printing_fires(self):
+        assert evaluate_toolhead_loss(**self.default_args()) == LOSS_FIRE
+
+    def test_present_pin_is_idle(self):
+        args = self.default_args(toolhead_present=True)
+        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
+
+    def test_no_recorded_absence_is_idle(self):
+        args = self.default_args(absent_since=None)
+        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
+
+    def test_already_fired_loss_event_stays_idle(self):
+        args = self.default_args(already_fired=True)
+        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
+
+    def test_absence_shorter_than_the_window_waits(self):
+        args = self.default_args(now=100.5)
+        assert evaluate_toolhead_loss(**args) == LOSS_WAIT
+
+    def test_absence_exactly_at_the_window_fires(self):
+        args = self.default_args(now=101.0)
+        assert evaluate_toolhead_loss(**args) == LOSS_FIRE
+
+    @pytest.mark.parametrize(
+        "state", [s for s in ALL_STATES if s != STATE_READY]
+    )
+    def test_every_non_ready_state_suspends_the_monitor(self, state):
+        args = self.default_args(changer_state=state)
+        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
+
+    def test_no_active_tool_is_idle(self):
+        args = self.default_args(active_tool=None)
+        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
+
+    @pytest.mark.parametrize(
+        "print_state", [PRINT_STATE_PAUSED, PRINT_STATE_STANDBY]
+    )
+    def test_only_an_active_print_arms_the_monitor(self, print_state):
+        args = self.default_args(print_state=print_state)
+        assert evaluate_toolhead_loss(**args) == LOSS_IDLE
+
+    def test_unlisted_changer_state_raises(self):
+        args = self.default_args(changer_state="rebooting")
+        with pytest.raises(ValueError):
+            evaluate_toolhead_loss(**args)
+
+    def test_unlisted_print_state_raises(self):
+        args = self.default_args(print_state="resuming")
+        with pytest.raises(ValueError):
+            evaluate_toolhead_loss(**args)
+
+
+class TestEvaluateRediscovery:
+    def default_args(self, **overrides):
+        args = {
+            "last_edge": 100.0,
+            "now": 102.0,
+            "settle_time": 1.0,
+            "changer_state": STATE_READY,
+            "print_state": PRINT_STATE_STANDBY,
+        }
+        args.update(overrides)
+        return args
+
+    def test_settled_edge_while_idle_runs(self):
+        assert evaluate_rediscovery(**self.default_args()) == REDISCOVER_RUN
+
+    def test_settled_edge_while_paused_runs(self):
+        args = self.default_args(print_state=PRINT_STATE_PAUSED)
+        assert evaluate_rediscovery(**args) == REDISCOVER_RUN
+
+    def test_recent_edge_waits(self):
+        args = self.default_args(now=100.5)
+        assert evaluate_rediscovery(**args) == REDISCOVER_WAIT
+
+    def test_no_recorded_edge_cancels(self):
+        args = self.default_args(last_edge=None)
+        assert evaluate_rediscovery(**args) == REDISCOVER_CANCEL
+
+    def test_change_in_progress_cancels(self):
+        args = self.default_args(changer_state=STATE_CHANGING)
+        assert evaluate_rediscovery(**args) == REDISCOVER_CANCEL
+
+    def test_active_print_cancels(self):
+        args = self.default_args(print_state=PRINT_STATE_PRINTING)
+        assert evaluate_rediscovery(**args) == REDISCOVER_CANCEL
+
+    @pytest.mark.parametrize(
+        "state",
+        [STATE_READY, STATE_UNKNOWN, STATE_ERROR, STATE_UNINITIALIZED],
+    )
+    def test_every_non_changing_state_allows_rediscovery(self, state):
+        args = self.default_args(changer_state=state)
+        assert evaluate_rediscovery(**args) == REDISCOVER_RUN
+
+    def test_unlisted_changer_state_raises(self):
+        args = self.default_args(changer_state="rebooting")
+        with pytest.raises(ValueError):
+            evaluate_rediscovery(**args)
+
+    def test_unlisted_print_state_raises(self):
+        args = self.default_args(print_state="resuming")
+        with pytest.raises(ValueError):
+            evaluate_rediscovery(**args)
 
 
 class TestClassifyPrintState:

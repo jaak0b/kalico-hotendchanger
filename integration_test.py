@@ -125,8 +125,14 @@ CASES = (
             ' (within 2.0C)',
             'gcode homing: X:0.400000 Y:0.200000 Z:-0.050000',
             'gcode homing: X:0.000000 Y:0.000000 Z:0.000000',
+            'stepper motion_queue: extruder1',
+            'stepper motion_queue: extruder\n',
         ),
-        'forbid': ('Unknown command:"T1"', 'Unknown command:"T0"'),
+        'forbid': (
+            'Unknown command:"T1"',
+            'Unknown command:"T0"',
+            'is not a valid extruder',
+        ),
     },
     {
         'name': 'T1 unhomed',
