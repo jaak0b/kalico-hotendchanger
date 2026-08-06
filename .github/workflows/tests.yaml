@@ -3,6 +3,11 @@ name: Tests
 on:
   push:
   pull_request:
+  # The weekly run re-runs the same matrix with no repo changes: the moving
+  # legs (Kalico main, Klipper master) catch upstream movement early, and
+  # the pinned legs distinguish upstream breakage from repo breakage.
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read

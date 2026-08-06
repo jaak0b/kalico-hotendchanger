@@ -128,6 +128,11 @@ CASES = (
             'gcode homing: X:0.000000 Y:0.000000 Z:0.000000',
             'stepper motion_queue: extruder1',
             'stepper motion_queue: extruder\n',
+            # T1's per-tool pressure_advance must be live both on the
+            # carrier stepper and through the hosted stepper on the
+            # heater-only section, where Kalico's planner reads it.
+            'PA extruder=0.123456',
+            'PA extruder1=0.123456',
         ),
         'forbid': (
             'Unknown command:"T1"',
@@ -223,6 +228,28 @@ def check_module_lists():
             "module lists diverge: install.sh PLUGIN_FILES=%r, "
             "integration_test.py PLUGIN_MODULES=%r. Register every plugin "
             "module in both." % (sh_modules, PLUGIN_MODULES))
+
+
+def check_pa_source_shape(checkout, layout):
+    """The plugin's per-tool pressure advance relies on Kalico's process_move
+    reading the active section's extruder_stepper pressure advance (the PA
+    hosting dependency); an upstream refactor of that read must fail CI by
+    name instead of silently losing pressure advance."""
+    if layout != 'kalico':
+        return
+    source_path = checkout / 'klippy' / 'kinematics' / 'extruder.py'
+    source = source_path.read_text(errors='replace')
+    match = re.search(
+        r'def process_move\b.*?(?=\n    def |\nclass |\Z)', source, re.DOTALL)
+    body = match.group(0) if match else ''
+    if ('extruder_stepper' not in body) or ('pressure_advance' not in body):
+        raise Failure(
+            "%s: process_move no longer reads the active section's "
+            "extruder_stepper pressure advance. The plugin's per-tool "
+            "pressure advance hosts the carrier stepper on the active "
+            "section and depends on that read; re-verify the hosting "
+            "against this firmware before trusting pressure advance."
+            % (source_path,))
 
 
 def check_checkout(raw):
@@ -542,6 +569,7 @@ def main():
 
     checkout = check_checkout(args.checkout)
     layout = detect_layout(checkout)
+    check_pa_source_shape(checkout, layout)
     report('firmware checkout: %s' % (checkout,))
     report('firmware layout: %s' % (layout,))
     report('python: %s' % (sys.executable,))
