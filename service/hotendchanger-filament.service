@@ -1,0 +1,15 @@
+[Unit]
+Description=Hotendchanger filament service
+Documentation=https://github.com/jaak0b/kalico-hotendchanger
+After=moonraker.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+User=@USER@
+ExecStart=@PYTHON@ "@SERVICE_DIR@/hotendchanger_filament.py" --socket "@SOCKET@"
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

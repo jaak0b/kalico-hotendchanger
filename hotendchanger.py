@@ -1,4 +1,5 @@
 # Support for hotend-only toolchanger printers
+import json
 import logging
 
 STATE_UNINITIALIZED = "uninitialized"
@@ -38,6 +39,45 @@ PRINT_STATE_STANDBY = "standby"
 # (klippy/extras/print_stats.py:46-111) and stock Klipper
 # (klippy/extras/print_stats.py:44-92).
 PRINT_STATS_FINISHED_STATES = ("standby", "complete", "cancelled", "error")
+
+FILAMENT_REMOTE_METHOD = "hotendchanger_filament_console"
+FILAMENT_SERVICE_UNIT = "hotendchanger-filament"
+FILAMENT_REPLY_COMMAND = "_HOTENDCHANGER_FILAMENT_REPLY"
+FILAMENT_REPLY_INFO = "info"
+FILAMENT_REPLY_ERROR = "error"
+FILAMENT_CONSOLE_COMMANDS = (
+    (
+        "HOTENDCHANGER_FILAMENT_ADD",
+        "add",
+        "Add a filament to the library"
+        " (NAME= MATERIAL= COLOR=RRGGBB NOZZLE_TEMP=)",
+    ),
+    (
+        "HOTENDCHANGER_FILAMENT_ASSIGN",
+        "assign",
+        "Set the filament a tool holds (T= NAME=), or clear it (T= CLEAR=1)",
+    ),
+    (
+        "HOTENDCHANGER_FILAMENT_LIST",
+        "list",
+        "List each tool's filament and the filament library",
+    ),
+)
+
+
+def decode_filament_reply(encoded):
+    try:
+        text = json.loads(encoded)
+    except ValueError:
+        return None
+    if not isinstance(text, str):
+        return None
+    return text
+
+
+def format_error_reply(text):
+    return "\n".join("!! " + line for line in text.split("\n"))
+
 
 def format_tool(tool_number):
     return "T%d" % (tool_number,)
@@ -503,6 +543,17 @@ class Hotendchanger:
             self._guarded(self.cmd_INITIALIZE_HOTENDCHANGER),
             desc="Re-run tool detection, or assert the mounted tool with T=<n>",
         )
+        for command, action, desc in FILAMENT_CONSOLE_COMMANDS:
+            self.gcode.register_command(
+                command,
+                self._guarded(self._make_filament_command(action)),
+                desc=desc,
+            )
+        self.gcode.register_command(
+            FILAMENT_REPLY_COMMAND,
+            self._guarded(self.cmd_FILAMENT_REPLY),
+            desc="Print a reply from the filament service (internal)",
+        )
 
     def register_tool(self, config, tool):
         if tool.tool_number in self.tools:
@@ -529,6 +580,52 @@ class Hotendchanger:
             self._do_tool_change(gcmd, tool_number)
 
         return handler
+
+    def _make_filament_command(self, action):
+        def handler(gcmd):
+            self._forward_filament_command(gcmd, action)
+
+        return handler
+
+    def _forward_filament_command(self, gcmd, action):
+        webhooks = self.printer.lookup_object("webhooks")
+        call_remote_method = getattr(webhooks, "call_remote_method", None)
+        if call_remote_method is None:
+            raise gcmd.error(
+                "This firmware has no webhooks.call_remote_method, so console"
+                " commands cannot reach the filament service. Use its API"
+                " through Moonraker instead."
+            )
+        try:
+            call_remote_method(
+                FILAMENT_REMOTE_METHOD,
+                command=action,
+                params=dict(gcmd.get_command_parameters()),
+            )
+        except self.printer.command_error as e:
+            raise gcmd.error(
+                "The filament service is not running (%s). Check it with:"
+                " systemctl status %s" % (e, FILAMENT_SERVICE_UNIT)
+            )
+
+    def cmd_FILAMENT_REPLY(self, gcmd):
+        kind = gcmd.get("KIND")
+        text = decode_filament_reply(gcmd.get("MSG"))
+        if text is None:
+            raise gcmd.error(
+                "%s received a malformed MSG; the filament service and this"
+                " plugin are from different versions." % (FILAMENT_REPLY_COMMAND,)
+            )
+        if kind == FILAMENT_REPLY_INFO:
+            self.gcode.respond_info(text)
+        elif kind == FILAMENT_REPLY_ERROR:
+            self.gcode.respond_raw(format_error_reply(text))
+        else:
+            raise gcmd.error(
+                "%s received unknown KIND=%s; the filament service and this"
+                " plugin are from different versions."
+                % (FILAMENT_REPLY_COMMAND, kind)
+            )
 
     def _guarded(self, func):
         def wrapper(gcmd):

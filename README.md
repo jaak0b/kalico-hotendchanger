@@ -141,6 +141,11 @@ sh install.sh
 sudo service klipper restart
 ```
 
+`install.sh` asks whether to install the core plugin only or also the
+[filament service](#filament-service). Pass `--no-filament-service` or
+`--filament-service` to skip the question; one of them is required when
+the script runs non-interactively.
+
 `install.sh` symlinks `hotendchanger.py` and `hotendchanger_tool.py` into
 the checkout at `~/klipper` (pass another path as an argument): into
 `klippy/plugins/` when the checkout's loader supports it (Kalico), into
@@ -157,6 +162,102 @@ origin: https://github.com/jaak0b/kalico-hotendchanger
 primary_branch: main
 is_system_service: False
 ```
+
+## Filament service
+
+An optional service that records which filament each tool holds and
+publishes it to Moonraker's `lane_data` database namespace. OrcaSlicer
+reads that namespace to fill its filament list, so slot N is tool N. The
+library lives in Moonraker's database (namespace `hotendchanger`); each
+filament has a name, material, color and nozzle temperature.
+
+**Do not run AFC or Happy Hare on the same printer.** They write
+`lane_data` too, and each overwrites the other's entries.
+
+### Install the service
+
+```
+cd ~/kalico-hotendchanger
+sh install.sh --filament-service
+sudo systemctl restart moonraker klipper
+```
+
+The script installs the systemd unit `hotendchanger-filament`, which runs
+the service from this checkout with the system `python3` (3.7 or newer,
+no third-party packages). It connects to Moonraker through
+`~/printer_data/comms/moonraker.sock`; pass `--printer-data DIR` if
+Moonraker's data directory is elsewhere. The script also adds the unit to
+`moonraker.asvc` so Moonraker may restart it. Check the service with
+`systemctl status hotendchanger-filament`.
+
+With the service installed, use this update manager entry in place of the
+one above, so updates also restart the service:
+
+```
+[update_manager hotendchanger-filament]
+type: git_repo
+path: ~/kalico-hotendchanger
+origin: https://github.com/jaak0b/kalico-hotendchanger
+primary_branch: main
+managed_services: hotendchanger-filament
+```
+
+### Filament console commands
+
+`HOTENDCHANGER_FILAMENT_ADD NAME="<name>" MATERIAL=<material>
+COLOR=<RRGGBB> NOZZLE_TEMP=<temp>`: add a filament to the library. Quote
+names that contain spaces, for example `NAME="Elegoo ASA"`. Names must be
+unique, ignoring case. `COLOR` takes six hex digits, with or without a
+leading `#`.
+
+`HOTENDCHANGER_FILAMENT_ASSIGN T=<n> NAME="<name>"`: record that tool
+`T<n>` holds the named filament. `HOTENDCHANGER_FILAMENT_ASSIGN T=<n>
+CLEAR=1` records that the tool holds no filament.
+
+`HOTENDCHANGER_FILAMENT_LIST`: print one row per tool with its filament,
+then one row per library filament with its material, color and nozzle
+temperature.
+
+The plugin forwards these commands to the service, which prints the
+result in the console. If the service is not connected, the command fails
+with an error naming the unit to check. The tool list always comes from
+the `[hotendchanger_tool]` sections; while Klipper is not ready,
+assigning a filament is refused and `lane_data` is left unchanged.
+
+### OrcaSlicer setup
+
+1. In Preferences, open Developer, then Experimental Features, and enable
+   "Use printer agents instead of print hosts".
+2. In the printer profile, open Basic information, then Advanced. Set
+   "Printer Agent" to Moonraker and enter the printer's host and API key.
+3. In the Filament header, click "Synchronize filament list from AMS" and
+   choose "Overwriting". Orca sets one slot per tool, with each loaded
+   tool's material and color.
+
+### API
+
+Other programs reach the service through Moonraker's
+`/server/extensions/request` with `"agent": "hotendchanger"`, a `method`
+and an `arguments` object:
+
+| method | arguments | result |
+| --- | --- | --- |
+| `filaments.list` | none | `{"filaments": [record, ...]}` |
+| `filaments.create` | `name`, `material`, `color`, `nozzle_temp` | `{"filament": record}` |
+| `filaments.update` | `id`, plus any of the four fields | `{"filament": record}` |
+| `filaments.delete` | `id` | `{"deleted": id}` |
+| `tools.list` | none | `{"tools": [{"number", "name", "filament": record or null}, ...]}` |
+| `tools.assign` | `tool` (number), `filament_id` (id or null) | `{"tool", "filament_id"}` |
+
+A record is `{"id", "name", "material", "color", "nozzle_temp"}`, with
+`color` stored as `#RRGGBB` in upper case. Deleting a filament that a
+tool still holds is refused. Assigning to a tool number missing from the
+Klipper config is refused; clearing is allowed so an assignment left on a
+removed tool can still be cleared.
+
+Read error messages over Moonraker's websocket, where they arrive in the
+JSON-RPC error's `data` field. Over HTTP, Moonraker replaces them with
+"Agent hotendchanger RPC error".
 
 ## Config reference
 
@@ -346,8 +447,9 @@ extruder.
 Deliberate exclusions, not gaps to be filled later:
 
 - No offset calibration (see the companion plugin above).
-- No filament handling of any kind and no temperature policy beyond the
-  pickup wait: no standby temperatures, no cooldown on idle.
+- No filament handling of any kind (the optional filament service only
+  records which filament each tool holds) and no temperature policy
+  beyond the pickup wait: no standby temperatures, no cooldown on idle.
 - No crash or dropped-tool detection beyond the detect pin checks
   described above.
 - No per-tool input shaper configuration, and one changer per printer.
