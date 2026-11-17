@@ -427,13 +427,69 @@ def run_console_command(store, tools, command, params, new_id):
     )
 
 
-def reply_script(kind, text):
-    if kind not in (REPLY_INFO, REPLY_ERROR):
-        raise ValueError("unknown reply kind %r" % (kind,))
+def _quote_param(value):
     # Klipper splits extended parameters with shlex in posix mode
     # (klippy/gcode.py:715-731 Kalico, :266-281 Klipper), where a double
-    # quoted value unescapes only backslash and double quote; the JSON
-    # payload carries newlines and non-ASCII text through that.
-    payload = json.dumps(text)
-    quoted = payload.replace("\\", "\\\\").replace('"', '\\"')
-    return '%s KIND=%s MSG="%s"' % (REPLY_COMMAND, kind, quoted)
+    # quoted value unescapes only backslash and double quote.
+    return '"%s"' % (value.replace("\\", "\\\\").replace('"', '\\"'),)
+
+
+def reply_script(kind, text, request):
+    if kind not in (REPLY_INFO, REPLY_ERROR):
+        raise ValueError("unknown reply kind %r" % (kind,))
+    # The JSON payload carries newlines and non-ASCII text through the
+    # shlex splitting.
+    line = "%s KIND=%s MSG=%s" % (REPLY_COMMAND, kind, _quote_param(json.dumps(text)))
+    if request is None:
+        return line
+    return "%s REQUEST=%s" % (line, _quote_param(request))
+
+
+def api_error(message):
+    return {"error": message}
+
+
+def api_result(payload):
+    return {"result": payload}
+
+
+API_METHODS = (
+    "filaments.list",
+    "filaments.create",
+    "filaments.update",
+    "filaments.delete",
+    "tools.list",
+    "tools.assign",
+)
+
+
+def run_api_method(store, tools, method, params, new_id):
+    if params is None:
+        params = {}
+    if method == "filaments.list":
+        check_params(params, (), ())
+        return None, {"filaments": list_filaments(store)}
+    if method == "filaments.create":
+        new_store, record = create_filament(store, params, new_id)
+        return new_store, {"filament": record}
+    if method == "filaments.update":
+        check_params(params, ("id",) + FILAMENT_FIELDS, ("id",))
+        changes = {k: v for k, v in params.items() if k != "id"}
+        new_store, record = update_filament(store, params["id"], changes)
+        return new_store, {"filament": record}
+    if method == "filaments.delete":
+        check_params(params, ("id",), ("id",))
+        return delete_filament(store, params["id"]), {"deleted": params["id"]}
+    if method == "tools.list":
+        check_params(params, (), ())
+        return None, {"tools": list_tools(store, tools)}
+    if method == "tools.assign":
+        check_params(params, ("tool", "filament_id"), ("tool", "filament_id"))
+        new_store = assign_filament(
+            store, tools, params["tool"], params["filament_id"]
+        )
+        return new_store, {"tool": params["tool"], "filament_id": params["filament_id"]}
+    raise LibraryError(
+        "Unknown method %r. Available methods: %s."
+        % (method, ", ".join(API_METHODS))
+    )

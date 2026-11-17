@@ -220,7 +220,9 @@ temperature.
 
 The plugin forwards these commands to the service, which prints the
 result in the console. If the service is not connected, the command fails
-with an error naming the unit to check. The tool list always comes from
+with an error naming the unit to check. If no reply arrives within
+`filament_reply_timeout`, the console shows an error; a reply that comes
+later is still printed, marked as late. The tool list always comes from
 the `[hotendchanger_tool]` sections; while Klipper is not ready,
 assigning a filament is refused and `lane_data` is left unchanged.
 
@@ -240,7 +242,19 @@ Other programs reach the service through Moonraker's
 `/server/extensions/request` with `"agent": "hotendchanger"`, a `method`
 and an `arguments` object:
 
-| method | arguments | result |
+Every reply is an object with exactly one key. Check for `error` first:
+
+- `{"result": <payload>}`: the request succeeded; the payload is listed below.
+- `{"error": "<message>"}`: the request was refused or failed; the
+  message says why and what to do.
+
+Moonraker returns this object as its own result, over HTTP and over the
+websocket alike. A successful `filaments.delete` returns
+`{"result": {"deleted": "3f2a9c"}}`; assigning to an unconfigured tool
+returns `{"error": "Tool number 4 is not configured in Klipper.
+Configured tool numbers: 0, 1, 2."}`.
+
+| method | arguments | payload |
 | --- | --- | --- |
 | `filaments.list` | none | `{"filaments": [record, ...]}` |
 | `filaments.create` | `name`, `material`, `color`, `nozzle_temp` | `{"filament": record}` |
@@ -254,10 +268,6 @@ A record is `{"id", "name", "material", "color", "nozzle_temp"}`, with
 tool still holds is refused. Assigning to a tool number missing from the
 Klipper config is refused; clearing is allowed so an assignment left on a
 removed tool can still be cleared.
-
-Read error messages over Moonraker's websocket, where they arrive in the
-JSON-RPC error's `data` field. Over HTTP, Moonraker replaces them with
-"Agent hotendchanger RPC error".
 
 ## Config reference
 
@@ -313,6 +323,12 @@ dropoff_gcode:
 #   sensor report to arrive; a failed reading is re-read once after
 #   another window before the change is declared failed. Raise this on
 #   slow transports such as CAN. Must be above 0. The default is 0.05.
+#filament_reply_timeout: 10.0
+#   Seconds a filament console command waits for the filament service
+#   to answer before the console reports that it is not answering. The
+#   answer waits for the current G-Code line to finish, so a long
+#   command (a heating wait, homing) can make it late; a late answer is
+#   still printed. Must be above 0. The default is 10.0.
 
 [hotendchanger_tool T0]
 extruder:

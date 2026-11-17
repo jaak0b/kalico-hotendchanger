@@ -3,7 +3,13 @@ import shlex
 
 import pytest
 
-from hotendchanger import decode_filament_reply, format_error_reply
+from hotendchanger import (
+    FilamentRequests,
+    decode_filament_reply,
+    format_error_reply,
+    format_filament_reply,
+    format_filament_timeout,
+)
 from service.filament_library import (
     LibraryError,
     ToolsUnknownError,
@@ -19,6 +25,7 @@ from service.filament_library import (
     load_store,
     parse_status_tools,
     reply_script,
+    run_api_method,
     run_console_command,
     update_filament,
 )
@@ -361,6 +368,15 @@ class TestConsoleCommands:
             run_console_command(library(), TOOLS, "remove", {}, "unused")
 
 
+def klipper_parse(line):
+    command, raw = line.split(" ", 1)
+    # The same splitting klippy/gcode.py _get_extended_params applies.
+    lexer = shlex.shlex(raw, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#;"
+    return command, dict(arg.split("=", 1) for arg in lexer)
+
+
 class TestConsoleReply:
     @pytest.mark.parametrize(
         "text",
@@ -373,16 +389,15 @@ class TestConsoleReply:
         ],
     )
     def test_text_survives_klipper_extended_parameter_parsing(self, text):
-        line = reply_script("info", text)
-        command, raw = line.split(" ", 1)
-        # The same splitting klippy/gcode.py _get_extended_params applies.
-        lexer = shlex.shlex(raw, posix=True)
-        lexer.whitespace_split = True
-        lexer.commenters = "#;"
-        params = dict(arg.split("=", 1) for arg in lexer)
+        command, params = klipper_parse(reply_script("info", text, "c0ffee"))
         assert command == "_HOTENDCHANGER_FILAMENT_REPLY"
         assert params["KIND"] == "info"
+        assert params["REQUEST"] == "c0ffee"
         assert decode_filament_reply(params["MSG"]) == text
+
+    def test_reply_without_request_id_omits_the_parameter(self):
+        _, params = klipper_parse(reply_script("error", "x", None))
+        assert sorted(params) == ["KIND", "MSG"]
 
     @pytest.mark.parametrize("encoded", ["not json", "42", '["a"]', '"unterminated'])
     def test_malformed_payload_decodes_to_none(self, encoded):
@@ -390,3 +405,152 @@ class TestConsoleReply:
 
     def test_error_reply_prefixes_every_line(self):
         assert format_error_reply("first\nsecond") == "!! first\n!! second"
+
+
+class TestFilamentRequests:
+    def test_reply_before_timeout_is_on_time_and_names_the_command(self):
+        requests = FilamentRequests()
+        request_id = requests.open("HOTENDCHANGER_FILAMENT_LIST")
+        assert requests.reply(request_id) == ("on_time", "HOTENDCHANGER_FILAMENT_LIST")
+
+    def test_timeout_reports_the_command_once(self):
+        requests = FilamentRequests()
+        request_id = requests.open("HOTENDCHANGER_FILAMENT_ADD")
+        assert requests.expire(request_id) == "HOTENDCHANGER_FILAMENT_ADD"
+        assert requests.expire(request_id) is None
+
+    def test_reply_after_timeout_is_late(self):
+        requests = FilamentRequests()
+        request_id = requests.open("HOTENDCHANGER_FILAMENT_ADD")
+        requests.expire(request_id)
+        assert requests.reply(request_id) == ("late", "HOTENDCHANGER_FILAMENT_ADD")
+
+    def test_timeout_after_reply_reports_nothing(self):
+        requests = FilamentRequests()
+        request_id = requests.open("HOTENDCHANGER_FILAMENT_LIST")
+        requests.reply(request_id)
+        assert requests.expire(request_id) is None
+
+    def test_second_reply_to_one_request_is_unmatched(self):
+        requests = FilamentRequests()
+        request_id = requests.open("HOTENDCHANGER_FILAMENT_LIST")
+        requests.reply(request_id)
+        assert requests.reply(request_id) == ("unmatched", None)
+
+    def test_reply_to_unknown_id_is_unmatched(self):
+        assert FilamentRequests().reply("feed") == ("unmatched", None)
+
+    def test_discarded_request_never_times_out(self):
+        requests = FilamentRequests()
+        request_id = requests.open("HOTENDCHANGER_FILAMENT_LIST")
+        requests.discard(request_id)
+        assert requests.expire(request_id) is None
+
+    def test_requests_get_distinct_ids(self):
+        requests = FilamentRequests()
+        assert requests.open("A") != requests.open("A")
+
+    def test_no_entry_remains_after_reply_or_late_reply(self):
+        requests = FilamentRequests()
+        on_time = requests.open("A")
+        late = requests.open("B")
+        requests.reply(on_time)
+        requests.expire(late)
+        requests.reply(late)
+        assert (requests.pending, requests.timed_out) == ({}, {})
+
+
+class TestFilamentReplyText:
+    def test_timeout_message_names_command_timeout_and_unit(self):
+        assert format_filament_timeout("HOTENDCHANGER_FILAMENT_ADD", 10.0) == (
+            "HOTENDCHANGER_FILAMENT_ADD got no answer from the filament service"
+            " within 10.0 s (filament_reply_timeout).\n"
+            "Check that the service runs with: systemctl status hotendchanger-filament\n"
+            "Then look for errors in the Moonraker log. A reply that arrives"
+            " later is still printed, marked as late."
+        )
+
+    def test_on_time_reply_is_printed_unchanged(self):
+        assert format_filament_reply("on_time", "X", "id", "T0 filament: none", 10.0) == (
+            "T0 filament: none"
+        )
+
+    def test_late_reply_is_marked_late(self):
+        text = format_filament_reply(
+            "late", "HOTENDCHANGER_FILAMENT_LIST", "id", "T0 filament: none", 2.5
+        )
+        assert text == (
+            "Late reply to HOTENDCHANGER_FILAMENT_LIST, received after the 2.5 s"
+            " timeout:\nT0 filament: none"
+        )
+
+    def test_unmatched_reply_is_marked_with_its_request_id(self):
+        text = format_filament_reply("unmatched", None, "abc", "T0 filament: none", 10.0)
+        assert text == "Reply to no pending filament command (REQUEST=abc):\nT0 filament: none"
+
+    def test_unknown_match_raises(self):
+        with pytest.raises(ValueError):
+            format_filament_reply("early", None, "abc", "x", 10.0)
+
+
+class TestApiMethods:
+    def test_list_filaments_payload(self):
+        assert run_api_method(library(), TOOLS, "filaments.list", None, "unused") == (
+            None,
+            {
+                "filaments": [
+                    {"id": "pla", "name": "Basic PLA", "material": "PLA", "color": "#FFFFFF", "nozzle_temp": 215},
+                    {"id": "asa", "name": "Elegoo ASA", "material": "ASA", "color": "#1A2B3C", "nozzle_temp": 250},
+                ]
+            },
+        )
+
+    def test_create_returns_new_record(self):
+        store, payload = run_api_method(
+            empty_store(),
+            TOOLS,
+            "filaments.create",
+            {"name": "PETG", "material": "PETG", "color": "00ff00", "nozzle_temp": 240},
+            "n1",
+        )
+        assert payload == {
+            "filament": {"id": "n1", "name": "PETG", "material": "PETG", "color": "#00FF00", "nozzle_temp": 240}
+        }
+        assert store["filaments"] == {
+            "n1": {"name": "PETG", "material": "PETG", "color": "#00FF00", "nozzle_temp": 240}
+        }
+
+    def test_update_returns_changed_record(self):
+        _, payload = run_api_method(
+            library(), TOOLS, "filaments.update", {"id": "asa", "nozzle_temp": 255}, "unused"
+        )
+        assert payload == {
+            "filament": {"id": "asa", "name": "Elegoo ASA", "material": "ASA", "color": "#1A2B3C", "nozzle_temp": 255}
+        }
+
+    def test_delete_returns_deleted_id(self):
+        store, payload = run_api_method(library(), TOOLS, "filaments.delete", {"id": "asa"}, "unused")
+        assert payload == {"deleted": "asa"}
+        assert sorted(store["filaments"]) == ["pla"]
+
+    def test_assign_returns_tool_and_filament(self):
+        store, payload = run_api_method(
+            library(), TOOLS, "tools.assign", {"tool": 1, "filament_id": "pla"}, "unused"
+        )
+        assert payload == {"tool": 1, "filament_id": "pla"}
+        assert store["assignments"] == {"1": "pla"}
+
+    def test_tools_list_payload(self):
+        assert run_api_method(library(), {"T0": 0}, "tools.list", {}, "unused") == (
+            None,
+            {"tools": [{"number": 0, "name": "T0", "filament": None}]},
+        )
+
+    def test_unknown_method_names_the_available_ones(self):
+        with pytest.raises(LibraryError) as excinfo:
+            run_api_method(library(), TOOLS, "filaments.purge", {}, "unused")
+        assert str(excinfo.value) == (
+            "Unknown method 'filaments.purge'. Available methods: filaments.list,"
+            " filaments.create, filaments.update, filaments.delete, tools.list,"
+            " tools.assign."
+        )

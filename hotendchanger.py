@@ -1,6 +1,7 @@
 # Support for hotend-only toolchanger printers
 import json
 import logging
+import uuid
 
 STATE_UNINITIALIZED = "uninitialized"
 STATE_READY = "ready"
@@ -63,6 +64,66 @@ FILAMENT_CONSOLE_COMMANDS = (
         "List each tool's filament and the filament library",
     ),
 )
+
+
+FILAMENT_MATCH_ON_TIME = "on_time"
+FILAMENT_MATCH_LATE = "late"
+FILAMENT_MATCH_UNMATCHED = "unmatched"
+
+
+class FilamentRequests:
+    def __init__(self):
+        self.pending = {}
+        self.timed_out = {}
+
+    def open(self, command):
+        request_id = uuid.uuid4().hex
+        self.pending[request_id] = command
+        return request_id
+
+    def discard(self, request_id):
+        self.pending.pop(request_id, None)
+
+    def expire(self, request_id):
+        command = self.pending.pop(request_id, None)
+        if command is not None:
+            self.timed_out[request_id] = command
+        return command
+
+    def reply(self, request_id):
+        if request_id in self.pending:
+            return FILAMENT_MATCH_ON_TIME, self.pending.pop(request_id)
+        if request_id in self.timed_out:
+            return FILAMENT_MATCH_LATE, self.timed_out.pop(request_id)
+        return FILAMENT_MATCH_UNMATCHED, None
+
+
+def format_filament_timeout(command, timeout):
+    return (
+        "%s got no answer from the filament service within %s s"
+        " (filament_reply_timeout).\n"
+        "Check that the service runs with: systemctl status %s\n"
+        "Then look for errors in the Moonraker log. A reply that arrives"
+        " later is still printed, marked as late."
+        % (command, timeout, FILAMENT_SERVICE_UNIT)
+    )
+
+
+def format_filament_reply(match, command, request_id, text, timeout):
+    if match == FILAMENT_MATCH_ON_TIME:
+        return text
+    if match == FILAMENT_MATCH_LATE:
+        return "Late reply to %s, received after the %s s timeout:\n%s" % (
+            command,
+            timeout,
+            text,
+        )
+    if match == FILAMENT_MATCH_UNMATCHED:
+        return "Reply to no pending filament command (REQUEST=%s):\n%s" % (
+            request_id,
+            text,
+        )
+    raise ValueError("unhandled filament reply match %r" % (match,))
 
 
 def decode_filament_reply(encoded):
@@ -512,6 +573,11 @@ class Hotendchanger:
         self.detect_report_time = config.getfloat(
             "detect_report_time", 0.05, above=0.0
         )
+        self.filament_reply_timeout = config.getfloat(
+            "filament_reply_timeout", 10.0, above=0.0
+        )
+        self.filament_requests = FilamentRequests()
+        self.filament_timers = {}
         self.toolhead_absent_since = None
         self.toolhead_loss_fired = False
         self.last_detect_edge = None
@@ -546,7 +612,7 @@ class Hotendchanger:
         for command, action, desc in FILAMENT_CONSOLE_COMMANDS:
             self.gcode.register_command(
                 command,
-                self._guarded(self._make_filament_command(action)),
+                self._guarded(self._make_filament_command(command, action)),
                 desc=desc,
             )
         self.gcode.register_command(
@@ -581,13 +647,13 @@ class Hotendchanger:
 
         return handler
 
-    def _make_filament_command(self, action):
+    def _make_filament_command(self, command, action):
         def handler(gcmd):
-            self._forward_filament_command(gcmd, action)
+            self._forward_filament_command(gcmd, command, action)
 
         return handler
 
-    def _forward_filament_command(self, gcmd, action):
+    def _forward_filament_command(self, gcmd, command, action):
         webhooks = self.printer.lookup_object("webhooks")
         call_remote_method = getattr(webhooks, "call_remote_method", None)
         if call_remote_method is None:
@@ -596,17 +662,51 @@ class Hotendchanger:
                 " commands cannot reach the filament service. Use its API"
                 " through Moonraker instead."
             )
+        request_id = self.filament_requests.open(command)
         try:
             call_remote_method(
                 FILAMENT_REMOTE_METHOD,
                 command=action,
                 params=dict(gcmd.get_command_parameters()),
+                request=request_id,
             )
         except self.printer.command_error as e:
+            self.filament_requests.discard(request_id)
             raise gcmd.error(
                 "The filament service is not running (%s). Check it with:"
                 " systemctl status %s" % (e, FILAMENT_SERVICE_UNIT)
             )
+        reactor = self.printer.get_reactor()
+        self.filament_timers[request_id] = reactor.register_timer(
+            lambda eventtime: self._filament_timeout(request_id),
+            reactor.monotonic() + self.filament_reply_timeout,
+        )
+
+    def _cancel_filament_timer(self, request_id):
+        timer = self.filament_timers.pop(request_id, None)
+        if timer is not None:
+            self.printer.get_reactor().unregister_timer(timer)
+
+    def _filament_timeout(self, request_id):
+        # Unregistering a timer from inside its own callback is the reactor's
+        # own pattern: klippy/reactor.py ReactorCallback.invoke (Klipper
+        # :51-52, Kalico :68-69); _check_timers iterates the list replaced
+        # by unregister_timer (Klipper :152-160, Kalico :182-207).
+        try:
+            self._cancel_filament_timer(request_id)
+            command = self.filament_requests.expire(request_id)
+            if command is not None:
+                self.gcode.respond_raw(
+                    format_error_reply(
+                        format_filament_timeout(command, self.filament_reply_timeout)
+                    )
+                )
+        except Exception:
+            logging.exception("hotendchanger: filament reply timeout handling failed")
+        return self.printer.get_reactor().NEVER
+
+    def _respond_error(self, text):
+        self.gcode.respond_raw(format_error_reply(text))
 
     def cmd_FILAMENT_REPLY(self, gcmd):
         kind = gcmd.get("KIND")
@@ -616,16 +716,29 @@ class Hotendchanger:
                 "%s received a malformed MSG; the filament service and this"
                 " plugin are from different versions." % (FILAMENT_REPLY_COMMAND,)
             )
+        request_id = gcmd.get("REQUEST", None)
+        if request_id is None:
+            raise gcmd.error(
+                "%s received no REQUEST; the filament service and this"
+                " plugin are from different versions." % (FILAMENT_REPLY_COMMAND,)
+            )
         if kind == FILAMENT_REPLY_INFO:
-            self.gcode.respond_info(text)
+            respond = self.gcode.respond_info
         elif kind == FILAMENT_REPLY_ERROR:
-            self.gcode.respond_raw(format_error_reply(text))
+            respond = self._respond_error
         else:
             raise gcmd.error(
                 "%s received unknown KIND=%s; the filament service and this"
                 " plugin are from different versions."
                 % (FILAMENT_REPLY_COMMAND, kind)
             )
+        self._cancel_filament_timer(request_id)
+        match, command = self.filament_requests.reply(request_id)
+        respond(
+            format_filament_reply(
+                match, command, request_id, text, self.filament_reply_timeout
+            )
+        )
 
     def _guarded(self, func):
         def wrapper(gcmd):

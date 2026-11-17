@@ -11,7 +11,6 @@ ETX = b"\x03"
 # (moonraker/components/extensions.py:29, :139-141).
 STREAM_LIMIT = 20 * 1024 * 1024
 
-RPC_METHOD_NOT_FOUND = -32601
 RPC_INTERNAL_ERROR = -32603
 
 

@@ -8,21 +8,11 @@ import subprocess
 import uuid
 
 import filament_library as lib
-from moonraker_agent import (
-    RPC_METHOD_NOT_FOUND,
-    ConnectionLost,
-    MoonrakerAgent,
-    RpcError,
-)
+from moonraker_agent import ConnectionLost, MoonrakerAgent, RpcError
 
 PROJECT_URL = "https://github.com/jaak0b/kalico-hotendchanger"
-RPC_REQUEST_FAILED = 400
 RECONNECT_DELAY_MIN = 1.0
 RECONNECT_DELAY_MAX = 30.0
-
-
-class UnknownMethodError(Exception):
-    pass
 
 
 def service_version():
@@ -191,63 +181,34 @@ class FilamentService:
             )
 
     async def handle_request(self, method, params):
-        if params is None:
-            params = {}
+        # Moonraker's HTTP route replaces a JSON-RPC error's message with a
+        # generic one (moonraker/components/application.py:717-721), so every
+        # failure is answered as a successful reply carrying "error".
         async with self.lock:
             try:
-                return await self._dispatch_request(method, params)
-            except UnknownMethodError as e:
-                raise RpcError(RPC_METHOD_NOT_FOUND, str(e))
-            except lib.LibraryError as e:
-                raise RpcError(RPC_REQUEST_FAILED, str(e))
-            except RpcError as e:
-                raise RpcError(
-                    e.code, "Moonraker request failed: %s" % (e.message,)
+                new_store, payload = lib.run_api_method(
+                    self._require_store(),
+                    self.tools,
+                    method,
+                    params,
+                    uuid.uuid4().hex,
                 )
-
-    async def _dispatch_request(self, method, params):
-        if method == "filaments.list":
-            lib.check_params(params, (), ())
-            return {"filaments": lib.list_filaments(self._require_store())}
-        if method == "filaments.create":
-            new_store, record = lib.create_filament(
-                self._require_store(), params, uuid.uuid4().hex
-            )
-            await self._save(new_store)
-            return {"filament": record}
-        if method == "filaments.update":
-            lib.check_params(params, ("id",) + lib.FILAMENT_FIELDS, ("id",))
-            changes = {k: v for k, v in params.items() if k != "id"}
-            new_store, record = lib.update_filament(
-                self._require_store(), params["id"], changes
-            )
-            await self._save(new_store)
-            return {"filament": record}
-        if method == "filaments.delete":
-            lib.check_params(params, ("id",), ("id",))
-            new_store = lib.delete_filament(self._require_store(), params["id"])
-            await self._save(new_store)
-            return {"deleted": params["id"]}
-        if method == "tools.list":
-            lib.check_params(params, (), ())
-            return {"tools": lib.list_tools(self._require_store(), self.tools)}
-        if method == "tools.assign":
-            lib.check_params(
-                params, ("tool", "filament_id"), ("tool", "filament_id")
-            )
-            new_store = lib.assign_filament(
-                self._require_store(),
-                self.tools,
-                params["tool"],
-                params["filament_id"],
-            )
-            await self._save(new_store)
-            return {"tool": params["tool"], "filament_id": params["filament_id"]}
-        raise UnknownMethodError(
-            "Unknown method %r. Available methods: filaments.list,"
-            " filaments.create, filaments.update, filaments.delete,"
-            " tools.list, tools.assign." % (method,),
-        )
+                if new_store is not None:
+                    await self._save(new_store)
+                return lib.api_result(payload)
+            except lib.LibraryError as e:
+                return lib.api_error(str(e))
+            except RpcError as e:
+                return lib.api_error("Moonraker request failed: %s" % (e.message,))
+            except (ConnectionLost, asyncio.CancelledError):
+                raise
+            except Exception as e:
+                logging.exception("Request %s failed", method)
+                return lib.api_error(
+                    "Internal error in the filament service while handling"
+                    " %s: %s: %s. Check the service log with: journalctl -u %s"
+                    % (method, type(e).__name__, e, lib.SERVICE_UNIT)
+                )
 
     async def handle_notification(self, method, params):
         async with self.lock:
@@ -271,6 +232,14 @@ class FilamentService:
                 logging.debug("Ignoring notification %s", method)
 
     async def _run_console(self, params):
+        request = params.get("request") if isinstance(params, dict) else None
+        if not isinstance(request, str):
+            logging.error(
+                "Console command without a request id: %r. The hotendchanger"
+                " plugin and this service are from different versions.",
+                request,
+            )
+            request = None
         try:
             if not isinstance(params, dict):
                 raise lib.LibraryError("The console command arrived without parameters.")
@@ -288,16 +257,17 @@ class FilamentService:
             kind, text = lib.REPLY_ERROR, str(e)
         except RpcError as e:
             kind, text = lib.REPLY_ERROR, "Moonraker request failed: %s" % (e.message,)
-        task = asyncio.ensure_future(self._reply(kind, text))
+        task = asyncio.ensure_future(self._reply(kind, text, request))
         self.reply_tasks.add(task)
         task.add_done_callback(self.reply_tasks.discard)
 
-    async def _reply(self, kind, text):
+    async def _reply(self, kind, text, request):
         # printer.gcode.script waits for the gcode mutex, so it runs outside
         # the ordered message worker.
         try:
             await self.agent.call(
-                "printer.gcode.script", {"script": lib.reply_script(kind, text)}
+                "printer.gcode.script",
+                {"script": lib.reply_script(kind, text, request)},
             )
         except (RpcError, ConnectionLost) as e:
             logging.error("Could not print the console reply %r: %s", text, e)
