@@ -140,11 +140,11 @@ if [ -z "$COMPONENTS" ]; then
     echo "Choose what to install:"
     echo "  1) core plugin only"
     echo "  2) core plugin, filament service and web page"
-    printf "Selection [1 or 2]: "
+    printf "Selection [1 or 2, Enter for 2]: "
     read -r answer
     case "$answer" in
         1) COMPONENTS=core ;;
-        2) COMPONENTS=service ;;
+        2|"") COMPONENTS=service ;;
         *)
             echo "install.sh: no valid selection made, nothing installed" >&2
             exit 1

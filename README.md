@@ -153,7 +153,7 @@ sh install.sh
 ```
 
 `install.sh` asks whether to install the core plugin only or also the
-[filament service](#filament-service) and its [web page](#web-page). Pass `--no-filament-service` or
+[filament service](#filament-service) and its [web page](#web-page); pressing Enter installs both. Pass `--no-filament-service` or
 `--filament-service` to skip the question; one of them is required when
 the script runs non-interactively.
 
