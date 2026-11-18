@@ -25,7 +25,6 @@ export default {
       assignBusy: false,
       assignError: null,
       colorDialog: null,
-      detailsOpen: false,
     };
   },
   computed: {
@@ -193,7 +192,7 @@ export default {
         </div>
 
         <v-select
-          class="mt-2 hc-tool-select"
+          class="mt-3 hc-tool-select"
           label="Filament"
           density="compact"
           variant="outlined"
@@ -206,63 +205,70 @@ export default {
         />
         <v-alert v-if="assignError" type="error" variant="tonal" density="compact" class="mt-2 hc-message">{{ assignError }}</v-alert>
 
-        <div class="hc-actions mt-2">
-          <v-btn
-            color="primary"
-            variant="tonal"
-            size="small"
-            density="comfortable"
-            :prepend-icon="icons.fire"
-            :title="heatHint"
-            :disabled="!filament || busy !== null"
-            :loading="busy === 'heat'"
-            @click="heat"
-          >Heat</v-btn>
-          <v-btn
-            variant="tonal"
-            size="small"
-            density="comfortable"
-            :prepend-icon="icons.power"
-            title="Turn the nozzle heater off"
-            :disabled="busy !== null"
-            :loading="busy === 'off'"
-            @click="off"
-          >Off</v-btn>
-          <v-btn
-            color="primary"
-            variant="flat"
-            size="small"
-            density="comfortable"
-            :prepend-icon="icons.mount"
-            :title="changeAction.hint"
-            :disabled="changeBlockReason !== null || busy !== null"
-            :loading="busy === changeAction.kind"
-            @click="change"
-          >{{ changeAction.label }}</v-btn>
+        <div class="hc-actions mt-3">
+          <div class="hc-action-buttons">
+            <v-btn
+              color="primary"
+              variant="tonal"
+              size="small"
+              density="comfortable"
+              :prepend-icon="icons.fire"
+              :title="heatHint"
+              :disabled="!filament || busy !== null"
+              :loading="busy === 'heat'"
+              @click="heat"
+            >Heat</v-btn>
+            <v-btn
+              variant="tonal"
+              size="small"
+              density="comfortable"
+              :prepend-icon="icons.power"
+              title="Turn the nozzle heater off"
+              :disabled="busy !== null"
+              :loading="busy === 'off'"
+              @click="off"
+            >Off</v-btn>
+            <v-btn
+              color="primary"
+              variant="flat"
+              size="small"
+              density="comfortable"
+              :prepend-icon="icons.mount"
+              :title="changeAction.hint"
+              :disabled="changeBlockReason !== null || busy !== null"
+              :loading="busy === changeAction.kind"
+              @click="change"
+            >{{ changeAction.label }}</v-btn>
+          </div>
+          <v-menu location="bottom end" :close-on-content-click="false">
+            <template #activator="{ props }">
+              <v-chip
+                v-bind="props"
+                class="hc-details-button px-1"
+                size="small"
+                density="comfortable"
+                label
+                variant="outlined"
+                color="grey"
+                title="Details"
+                aria-label="Details"
+                role="button"
+              ><v-icon size="small" :icon="icons.info" /></v-chip>
+            </template>
+            <v-card class="hc-details text-caption pa-3">
+              <div class="hc-row"><span class="hc-label">Changer state</span>
+                <span :class="['hc-ellipsis', 'text-' + stateColor]" :title="changer.state">{{ changer.state }}</span></div>
+              <div class="hc-row"><span class="hc-label">Dock pin</span>
+                <span class="hc-ellipsis">{{ pinText(tool.detect) }}</span></div>
+              <div class="hc-row"><span class="hc-label">Toolhead pin</span>
+                <span class="hc-ellipsis">{{ pinText(changer.toolhead_detect) }}</span></div>
+              <div class="hc-row"><span class="hc-label">Nozzle heater</span>
+                <span class="hc-ellipsis" :title="tool.extruder">{{ tool.extruder }}</span></div>
+            </v-card>
+          </v-menu>
         </div>
         <div v-if="changeBlockReason" class="text-caption text-medium-emphasis mt-1">{{ changeAction.label }} unavailable: {{ changeBlockReason }}</div>
         <v-alert v-if="gcodeError" type="error" variant="tonal" density="compact" class="mt-2 hc-message">{{ gcodeError }}</v-alert>
-
-        <v-btn
-          class="mt-1 hc-details-toggle"
-          variant="text"
-          size="x-small"
-          :append-icon="detailsOpen ? '$collapse' : '$expand'"
-          :aria-expanded="String(detailsOpen)"
-          @click="detailsOpen = !detailsOpen"
-        >Details</v-btn>
-        <v-expand-transition>
-          <div v-show="detailsOpen" class="text-caption">
-            <div class="hc-row"><span class="hc-label">Changer state</span>
-              <span :class="['hc-ellipsis', 'text-' + stateColor]" :title="changer.state">{{ changer.state }}</span></div>
-            <div class="hc-row"><span class="hc-label">Dock pin</span>
-              <span class="hc-ellipsis">{{ pinText(tool.detect) }}</span></div>
-            <div class="hc-row"><span class="hc-label">Toolhead pin</span>
-              <span class="hc-ellipsis">{{ pinText(changer.toolhead_detect) }}</span></div>
-            <div class="hc-row"><span class="hc-label">Nozzle heater</span>
-              <span class="hc-ellipsis" :title="tool.extruder">{{ tool.extruder }}</span></div>
-          </div>
-        </v-expand-transition>
       </v-card-text>
       <color-dialog
         v-if="colorDialog"

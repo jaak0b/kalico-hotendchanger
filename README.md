@@ -355,15 +355,19 @@ The page shows:
   a filament selector; and the buttons **Heat** (to the filament's nozzle
   temperature), **Off** and **Mount** (`T<n>`). The mounted tool's card
   shows **Dock** (`UNSELECT_TOOL`) instead of **Mount**. Each button has a
-  tooltip. A collapsed **Details** toggle shows the raw values:
-  Changer state, Dock pin, Toolhead pin and the nozzle heater name. The
-  grid shows 1 card per row on phones, 2 on tablets, 4 on desktops and 6
-  on very wide screens.
+  tooltip. The info button at the end of the button row opens the raw
+  values: Changer state, Dock pin, Toolhead pin and the nozzle heater
+  name. The grid shows 1 card per row on phones, 2 on tablets, 4 on
+  desktops and 6 on very wide screens.
 - The filament library, with add, edit and delete.
 
 Choosing a filament in a tool card's selector opens a color picker; the
 tool changes only when you save a color. Click the color dot on a card to
 change only that tool's color.
+
+Press Escape or click the close button in the top bar to return to
+Mainsail; while a dialog or menu is open, Escape closes only that dialog
+or menu.
 
 The chip is derived from the changer state, the tool's dock pin
 (`detect_pin`) and the toolhead pin. The first matching row applies; the

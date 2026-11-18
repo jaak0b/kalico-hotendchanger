@@ -118,7 +118,15 @@ html, body {
 
 .hc-actions {
   display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.hc-action-buttons {
+  display: flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
 }
 
@@ -134,8 +142,13 @@ html, body {
   font-size: 0.875rem;
 }
 
-.hc-details-toggle {
-  margin-left: -8px;
+.hc-details-button {
+  flex: none;
+}
+
+.hc-details {
+  width: 260px;
+  max-width: calc(100vw - 32px);
 }
 
 .hc-message {

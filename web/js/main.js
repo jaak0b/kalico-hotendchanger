@@ -18,11 +18,28 @@ const MAINSAIL_DARK = {
 };
 
 const printer = createPrinter(websocketUrl(window.location));
+const MAINSAIL_URL = "/";
+
+function leaveOnEscape(event) {
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  // Vuetify closes the topmost overlay from its own keydown listener while
+  // v-overlay--active is set (vendor/vuetify-3.13.7/vuetify.min.js, VOverlay
+  // onKeydown); this capture listener on window runs before it.
+  if (document.querySelector(".v-overlay--active") !== null) return;
+  window.location.assign(MAINSAIL_URL);
+}
 
 const App = {
   components: { FilamentLibrary, ToolCard },
   data() {
-    return { icons, state: printer.state, serviceUnit: SERVICE_UNIT };
+    return { icons, state: printer.state, serviceUnit: SERVICE_UNIT, mainsailUrl: MAINSAIL_URL };
+  },
+  mounted() {
+    window.addEventListener("keydown", leaveOnEscape, { capture: true });
+  },
+  unmounted() {
+    window.removeEventListener("keydown", leaveOnEscape, { capture: true });
   },
   computed: {
     socketChip() {
@@ -52,7 +69,7 @@ const App = {
       <v-app-bar density="compact" flat class="hc-appbar">
         <v-icon :icon="icons.tool" class="ml-4 mr-3" />
         <v-app-bar-title>Hotendchanger</v-app-bar-title>
-        <v-btn icon="$close" href="/" variant="text" class="mr-2" title="Back to Mainsail" aria-label="Back to Mainsail" />
+        <v-btn icon="$close" :href="mainsailUrl" variant="text" class="mr-2" title="Back to Mainsail" aria-label="Back to Mainsail" />
       </v-app-bar>
       <v-main>
         <v-container fluid class="hc-container">
