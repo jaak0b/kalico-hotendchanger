@@ -2,9 +2,12 @@
 # Symlink the hotendchanger plugin modules into a firmware checkout's
 # module directory: klippy/plugins/ on Kalico, klippy/extras/ on stock
 # Klipper. Optionally install the filament service as a systemd unit and
-# the web page into the Mainsail nginx site.
+# the web page into the Mainsail nginx site, and an update manager entry
+# into moonraker.conf. Restarts the affected services unless a print is
+# running.
 #
 # Usage: ./install.sh [--filament-service | --no-filament-service]
+#                     [--update-manager | --no-update-manager]
 #                     [--printer-data DIR] [--nginx-site FILE]
 #                     [--web-url URL] [FIRMWARE_DIR]
 # FIRMWARE_DIR can also be given via the KALICO_DIR environment variable.
@@ -34,10 +37,12 @@ NAVI_TITLE=Hotendchanger
 NAVI_ICON='M7,2H17V8H19V13H16.5L13,17H11L7.5,13H5V8H7V2M10,22H2V20H10A1,1 0 0,0 11,19V18H13V19A3,3 0 0,1 10,22Z'
 
 usage() {
-    echo "Usage: $0 [--filament-service | --no-filament-service] [--printer-data DIR] [--nginx-site FILE] [--web-url URL] [FIRMWARE_DIR]"
+    echo "Usage: $0 [--filament-service | --no-filament-service] [--update-manager | --no-update-manager] [--printer-data DIR] [--nginx-site FILE] [--web-url URL] [FIRMWARE_DIR]"
 }
 
 COMPONENTS=
+UPDATE_ENTRY=
+MOONRAKER_CHANGED=no
 TARGET_ARG=
 PRINTER_DATA_DIR=
 NGINX_SITE=/etc/nginx/sites-available/mainsail
@@ -49,6 +54,12 @@ while [ $# -gt 0 ]; do
             ;;
         --no-filament-service)
             COMPONENTS=core
+            ;;
+        --update-manager)
+            UPDATE_ENTRY=yes
+            ;;
+        --no-update-manager)
+            UPDATE_ENTRY=no
             ;;
         --printer-data)
             if [ $# -lt 2 ]; then
@@ -104,6 +115,23 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+resolve_printer_data() {
+    if [ -z "$PRINTER_DATA_DIR" ]; then
+        if [ -d "$HOME/printer_data" ]; then
+            PRINTER_DATA_DIR="$HOME/printer_data"
+        else
+            echo "install.sh: cannot find \$HOME/printer_data; pass Moonraker's data directory with --printer-data" >&2
+            exit 1
+        fi
+    fi
+}
+
+ensure_trailing_newline() {
+    if [ -s "$1" ] && [ -n "$(tail -c 1 "$1")" ]; then
+        printf '\n' >> "$1"
+    fi
+}
+
 if [ -z "$COMPONENTS" ]; then
     if [ ! -t 0 ]; then
         echo "install.sh: pass --filament-service or --no-filament-service when running non-interactively" >&2
@@ -155,14 +183,7 @@ if [ "$COMPONENTS" = service ]; then
         echo "install.sh: $PYTHON is older than Python 3.7, which the filament service needs" >&2
         exit 1
     fi
-    if [ -z "$PRINTER_DATA_DIR" ]; then
-        if [ -d "$HOME/printer_data" ]; then
-            PRINTER_DATA_DIR="$HOME/printer_data"
-        else
-            echo "install.sh: cannot find \$HOME/printer_data; pass Moonraker's data directory with --printer-data" >&2
-            exit 1
-        fi
-    fi
+    resolve_printer_data
     ASVC_FILE="$PRINTER_DATA_DIR/moonraker.asvc"
     # Moonraker creates moonraker.asvc with its default service list on
     # first start (moonraker/components/machine.py:184-193); writing it
@@ -210,6 +231,63 @@ try:
 except filament_library.LibraryError as e:
     sys.exit("install.sh: %s Pass the address with --web-url." % (e,))
 WEB_URL_PY
+fi
+
+if [ "$COMPONENTS" = service ]; then
+    UPDATE_SECTION="update_manager $SERVICE_NAME"
+    UPDATE_SERVICES="klipper $SERVICE_NAME"
+else
+    UPDATE_SECTION="update_manager hotendchanger"
+    UPDATE_SERVICES=klipper
+fi
+
+if [ -z "$UPDATE_ENTRY" ]; then
+    if [ ! -t 0 ]; then
+        echo "install.sh: pass --update-manager or --no-update-manager when running non-interactively" >&2
+        exit 1
+    fi
+    echo "An update entry in moonraker.conf lets Mainsail's update screen update this plugin."
+    printf "Add the update entry? [Y/n]: "
+    read -r answer
+    case "$answer" in
+        ""|y|Y|yes|Yes|YES) UPDATE_ENTRY=yes ;;
+        n|N|no|No|NO) UPDATE_ENTRY=no ;;
+        *)
+            echo "install.sh: no valid answer given, nothing installed" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+if [ "$UPDATE_ENTRY" = yes ]; then
+    resolve_printer_data
+    MOONRAKER_CONF="$PRINTER_DATA_DIR/config/moonraker.conf"
+    if [ ! -f "$MOONRAKER_CONF" ] || [ ! -r "$MOONRAKER_CONF" ] || [ ! -w "$MOONRAKER_CONF" ]; then
+        echo "install.sh: cannot read and write $MOONRAKER_CONF; pass Moonraker's data directory with --printer-data, or pass --no-update-manager" >&2
+        exit 1
+    fi
+    command -v git > /dev/null || {
+        echo "install.sh: git not found; the update entry needs it to read this checkout's origin and branch" >&2
+        exit 1
+    }
+    UPDATE_ORIGIN=$(git -C "$SCRIPT_DIR" remote get-url origin) || {
+        echo "install.sh: $SCRIPT_DIR has no git remote named origin, which the update manager pulls from; install from a git clone, or pass --no-update-manager" >&2
+        exit 1
+    }
+    UPDATE_BRANCH=$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD) || {
+        echo "install.sh: cannot read the current branch of $SCRIPT_DIR; install from a git clone, or pass --no-update-manager" >&2
+        exit 1
+    }
+    if [ "$UPDATE_BRANCH" = HEAD ]; then
+        echo "install.sh: $SCRIPT_DIR is not on a branch (detached HEAD); check out the branch to follow, or pass --no-update-manager" >&2
+        exit 1
+    fi
+else
+    MOONRAKER_CONF="${PRINTER_DATA_DIR:-$HOME/printer_data}/config/moonraker.conf"
+fi
+
+if [ "$COMPONENTS" = core ]; then
+    PYTHON=$(command -v python3) || PYTHON=
 fi
 
 TARGET_DIR="${TARGET_ARG:-${KALICO_DIR:-}}"
@@ -273,8 +351,231 @@ for f in $PLUGIN_FILES; do
     echo "install.sh: linked $SCRIPT_DIR/$f -> $INSTALL_DIR/$f"
 done
 
+write_update_entry() {
+    if [ "$UPDATE_ENTRY" = no ]; then
+        return 0
+    fi
+    existing=$(sed -n 's/^[[:space:]]*\[\(update_manager[[:space:]]\{1,\}hotendchanger[^]]*\)\].*/\1/p' "$MOONRAKER_CONF" | head -n 1)
+    if [ -n "$existing" ]; then
+        echo "install.sh: $MOONRAKER_CONF already has [$existing]; left it unchanged"
+        if [ "$existing" != "$UPDATE_SECTION" ]; then
+            echo "install.sh: to have updates also restart $UPDATE_SERVICES, replace it with the [$UPDATE_SECTION] entry shown in the README"
+        fi
+        return 0
+    fi
+    backup="$MOONRAKER_CONF.$(date +%Y%m%d-%H%M%S).bak"
+    cp -p "$MOONRAKER_CONF" "$backup" || {
+        echo "install.sh: failed to back up $MOONRAKER_CONF to $backup; moonraker.conf was not changed" >&2
+        exit 1
+    }
+    echo "install.sh: backed up $MOONRAKER_CONF to $backup"
+    # managed_services accepts only the section's own name, klipper and
+    # moonraker, separated by whitespace
+    # (moonraker/components/update_manager/app_deploy.py:151-186).
+    ensure_trailing_newline "$MOONRAKER_CONF" && printf '\n[%s]\ntype: git_repo\npath: %s\norigin: %s\nprimary_branch: %s\nmanaged_services: %s\n' \
+        "$UPDATE_SECTION" "$SCRIPT_DIR" "$UPDATE_ORIGIN" "$UPDATE_BRANCH" "$UPDATE_SERVICES" >> "$MOONRAKER_CONF" || {
+        echo "install.sh: failed to add [$UPDATE_SECTION] to $MOONRAKER_CONF; restore it from $backup" >&2
+        exit 1
+    }
+    MOONRAKER_CHANGED=yes
+    echo "install.sh: added [$UPDATE_SECTION] to $MOONRAKER_CONF, following branch $UPDATE_BRANCH of $UPDATE_ORIGIN"
+}
+
+moonraker_helper() {
+    "$PYTHON" - "$SCRIPT_DIR" "$MOONRAKER_CONF" "$1" <<'MOONRAKER_PY'
+import configparser
+import json
+import os
+import sys
+import time
+import urllib.request
+
+script_dir, conf_path, mode = sys.argv[1:4]
+sys.dont_write_bytecode = True
+sys.path.insert(0, script_dir)
+import hotendchanger
+
+UNDETERMINED = 2
+BUSY = 3
+# moonraker/server.py:88
+DEFAULT_PORT = 7125
+START_TIMEOUT = 60.0
+
+
+def fail(message):
+    print("install.sh: %s" % (message,), file=sys.stderr)
+    sys.exit(UNDETERMINED)
+
+
+def read_port():
+    if not os.path.isfile(conf_path):
+        print(
+            "install.sh: %s not found; querying Moonraker on its default port %d"
+            % (conf_path, DEFAULT_PORT),
+            file=sys.stderr,
+        )
+        return DEFAULT_PORT
+    # Moonraker parses its config with configparser
+    # (moonraker/confighelper.py:557).
+    parser = configparser.ConfigParser(
+        strict=False, interpolation=None, inline_comment_prefixes=("#",)
+    )
+    try:
+        parser.read(conf_path)
+    except configparser.Error as e:
+        fail("cannot read the [server] port from %s (%s)" % (conf_path, e))
+    text = parser.get("server", "port", fallback=None)
+    if text is None:
+        return DEFAULT_PORT
+    try:
+        return int(text)
+    except ValueError:
+        fail("the [server] port in %s is not a number: %r" % (conf_path, text))
+
+
+base = "http://127.0.0.1:%d" % (read_port(),)
+
+
+def get(path):
+    with urllib.request.urlopen(base + path, timeout=5) as response:
+        return json.load(response)["result"]
+
+
+def check():
+    try:
+        info = get("/server/info")
+        system_info = get("/machine/system_info")["system_info"]
+    except (OSError, ValueError, KeyError) as e:
+        fail("cannot reach Moonraker at %s (%s)" % (base, e))
+    # instance_ids names the systemd units of this Moonraker instance and
+    # its Klipper (moonraker/components/machine.py:356-359); older
+    # Moonraker versions do not report it.
+    units = system_info.get("instance_ids", {})
+    print(units.get("moonraker", "moonraker"), units.get("klipper", "klipper"))
+    klippy_state = info.get("klippy_state")
+    # Moonraker's Klipper states (moonraker/common.py:138-143); Klipper runs
+    # a print only while ready.
+    if klippy_state in ("startup", "error", "shutdown"):
+        return
+    if klippy_state == "disconnected":
+        fail("Moonraker is not connected to Klipper, so it cannot tell whether a print is running")
+    if klippy_state != "ready":
+        fail("Moonraker reports an unknown Klipper state %r" % (klippy_state,))
+    try:
+        status = get(
+            "/printer/objects/query?print_stats&pause_resume&virtual_sdcard"
+        )["status"]
+    except (OSError, ValueError, KeyError) as e:
+        fail("cannot read the print state from Moonraker at %s (%s)" % (base, e))
+    stats_state = status.get("print_stats", {}).get("state")
+    try:
+        print_state = hotendchanger.classify_print_state(
+            bool(status.get("pause_resume", {}).get("is_paused", False)),
+            stats_state,
+            bool(status.get("virtual_sdcard", {}).get("is_active", False)),
+        )
+    except ValueError as e:
+        fail("cannot tell whether a print is running: %s" % (e,))
+    if print_state == hotendchanger.PRINT_STATE_STANDBY:
+        return
+    if print_state in (
+        hotendchanger.PRINT_STATE_PRINTING,
+        hotendchanger.PRINT_STATE_PAUSED,
+    ):
+        print(
+            "install.sh: Klipper's print state is %s; restarting now would end the print"
+            % (print_state,),
+            file=sys.stderr,
+        )
+        sys.exit(BUSY)
+    fail("unhandled print state %r" % (print_state,))
+
+
+def wait():
+    deadline = time.monotonic() + START_TIMEOUT
+    while True:
+        try:
+            get("/server/info")
+            return
+        except (OSError, ValueError, KeyError) as e:
+            if time.monotonic() >= deadline:
+                fail(
+                    "Moonraker at %s did not answer within %d seconds of the restart (%s)"
+                    % (base, START_TIMEOUT, e)
+                )
+        time.sleep(1.0)
+
+
+if mode == "check":
+    check()
+elif mode == "wait":
+    wait()
+else:
+    fail("unhandled helper mode %r" % (mode,))
+MOONRAKER_PY
+}
+
+print_restart_commands() {
+    if [ "$1" = after-moonraker ]; then
+        echo "install.sh: run these commands once $MOONRAKER_UNIT is running again:"
+    else
+        echo "install.sh: run these commands once the printer is idle:"
+        if [ "$MOONRAKER_CHANGED" = yes ]; then
+            echo "    sudo systemctl restart $MOONRAKER_UNIT"
+        fi
+    fi
+    echo "    sudo systemctl restart $KLIPPER_UNIT"
+    if [ "$COMPONENTS" = service ]; then
+        echo "    sudo systemctl restart $SERVICE_NAME"
+    fi
+}
+
+restart_services() {
+    MOONRAKER_UNIT=moonraker
+    KLIPPER_UNIT=klipper
+    if [ -z "$PYTHON" ]; then
+        echo "install.sh: python3 not found, so whether a print is running cannot be checked; no service was restarted"
+        print_restart_commands
+        return 0
+    fi
+    units=$(moonraker_helper check) && check_status=0 || check_status=$?
+    if [ -n "$units" ]; then
+        MOONRAKER_UNIT=${units% *}
+        KLIPPER_UNIT=${units#* }
+    fi
+    if [ "$check_status" != 0 ]; then
+        echo "install.sh: no service was restarted"
+        print_restart_commands
+        return 0
+    fi
+    if [ "$MOONRAKER_CHANGED" = yes ]; then
+        echo "install.sh: restarting $MOONRAKER_UNIT so it reads the changed configuration (needs sudo)"
+        sudo systemctl restart "$MOONRAKER_UNIT" || {
+            echo "install.sh: failed to restart $MOONRAKER_UNIT; check it with: systemctl status $MOONRAKER_UNIT" >&2
+            exit 1
+        }
+        moonraker_helper wait || {
+            print_restart_commands after-moonraker
+            exit 1
+        }
+    fi
+    echo "install.sh: restarting $KLIPPER_UNIT to load the plugin (needs sudo)"
+    sudo systemctl restart "$KLIPPER_UNIT" || {
+        echo "install.sh: failed to restart $KLIPPER_UNIT; check it with: systemctl status $KLIPPER_UNIT" >&2
+        exit 1
+    }
+    if [ "$COMPONENTS" = service ]; then
+        sudo systemctl restart "$SERVICE_NAME" || {
+            echo "install.sh: failed to start $SERVICE_NAME; check it with: systemctl status $SERVICE_NAME" >&2
+            exit 1
+        }
+        echo "install.sh: started $SERVICE_NAME; check it with: systemctl status $SERVICE_NAME"
+    fi
+}
+
 if [ "$COMPONENTS" = core ]; then
-    echo "install.sh: restart the klippy service (or firmware restart) to load it"
+    write_update_entry
+    restart_services
     exit 0
 fi
 
@@ -304,21 +605,16 @@ sudo install -m 644 "$UNIT_TMP" "/etc/systemd/system/$SERVICE_NAME.service" || {
 }
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
-sudo systemctl restart "$SERVICE_NAME"
-echo "install.sh: started $SERVICE_NAME; check it with: systemctl status $SERVICE_NAME"
 
 if grep -qx "$SERVICE_NAME" "$ASVC_FILE"; then
     echo "install.sh: $ASVC_FILE already lists $SERVICE_NAME"
 else
-    if [ -s "$ASVC_FILE" ] && [ -n "$(tail -c 1 "$ASVC_FILE")" ]; then
-        printf '\n' >> "$ASVC_FILE"
-    fi
-    printf '%s\n' "$SERVICE_NAME" >> "$ASVC_FILE" || {
+    ensure_trailing_newline "$ASVC_FILE" && printf '%s\n' "$SERVICE_NAME" >> "$ASVC_FILE" || {
         echo "install.sh: failed to add $SERVICE_NAME to $ASVC_FILE" >&2
         exit 1
     }
+    MOONRAKER_CHANGED=yes
     echo "install.sh: added $SERVICE_NAME to $ASVC_FILE"
-    echo "install.sh: restart Moonraker so it reads the updated $ASVC_FILE"
 fi
 
 # nginx runs its workers as the user named in nginx.conf, or as nobody when
@@ -425,6 +721,6 @@ with open(tmp, "w") as f:
 os.replace(tmp, path)
 print("install.sh: %s the %s link in %s" % ("updated" if ours else "added", title, path))
 NAVI_PY
+write_update_entry
+restart_services
 echo "install.sh: reload Mainsail in the browser to see the $NAVI_TITLE sidebar link"
-
-echo "install.sh: restart the klippy service (or firmware restart) to load the plugin"

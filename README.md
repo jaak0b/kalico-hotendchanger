@@ -150,7 +150,6 @@ cd ~
 git clone https://github.com/jaak0b/kalico-hotendchanger
 cd kalico-hotendchanger
 sh install.sh
-sudo service klipper restart
 ```
 
 `install.sh` asks whether to install the core plugin only or also the
@@ -158,13 +157,36 @@ sudo service klipper restart
 `--filament-service` to skip the question; one of them is required when
 the script runs non-interactively.
 
+`install.sh` then asks whether to add an update entry to
+`moonraker.conf`, so Mainsail's update screen can update this plugin.
+Press Enter to add it. Pass `--update-manager` or `--no-update-manager`
+to skip the question; one of them is required when the script runs
+non-interactively.
+
+- The entry follows the branch and `origin` remote of this checkout.
+- A copy of `moonraker.conf` is saved next to it as
+  `moonraker.conf.<date>-<time>.bak` before the entry is added.
+- An existing `[update_manager hotendchanger]` or
+  `[update_manager hotendchanger-filament]` section is left unchanged.
+
+At the end, `install.sh` restarts the services it changed: Moonraker
+first (only if `moonraker.conf` or `moonraker.asvc` changed), then
+Klipper, then the filament service. It asks Moonraker first whether a
+print is running.
+
+**If a print is running or paused, nothing is restarted.** The script
+prints the restart commands; run them after the print. It does the same
+when it cannot reach Moonraker.
+
 `install.sh` symlinks `hotendchanger.py` and `hotendchanger_tool.py` into
 the checkout at `~/klipper` (pass another path as an argument): into
 `klippy/plugins/` when the checkout's loader supports it (Kalico), into
 `klippy/extras/` otherwise (stock Klipper). On stock Klipper the symlinks
 are untracked files, so git and Moonraker's update manager report the
-checkout as dirty until they are removed. Update manager entry for
-moonraker.conf:
+checkout as dirty until they are removed.
+
+For a manual setup without the filament service, this is the update
+manager entry `install.sh` writes:
 
 ```
 [update_manager hotendchanger]
@@ -172,7 +194,7 @@ type: git_repo
 path: ~/kalico-hotendchanger
 origin: https://github.com/jaak0b/kalico-hotendchanger
 primary_branch: main
-is_system_service: False
+managed_services: klipper
 ```
 
 ## Filament service
@@ -199,7 +221,6 @@ its color.
 ```
 cd ~/kalico-hotendchanger
 sh install.sh --filament-service
-sudo systemctl restart moonraker klipper
 ```
 
 The script installs the systemd unit `hotendchanger-filament`, which runs
@@ -211,8 +232,9 @@ Moonraker's data directory is elsewhere. The script also adds the unit to
 `systemctl status hotendchanger-filament`. The same run installs the
 [web page](#web-page).
 
-With the service installed, use this update manager entry in place of the
-one above, so updates also restart the service:
+With the service installed, `install.sh` writes this update manager
+entry, so updates restart both Klipper and the service. For a manual
+setup, use it in place of the entry above:
 
 ```
 [update_manager hotendchanger-filament]
@@ -220,8 +242,11 @@ type: git_repo
 path: ~/kalico-hotendchanger
 origin: https://github.com/jaak0b/kalico-hotendchanger
 primary_branch: main
-managed_services: hotendchanger-filament
+managed_services: klipper hotendchanger-filament
 ```
+
+Moonraker accepts only the section's own name, `klipper` and `moonraker`
+in `managed_services`, so the section must be named after the service.
 
 ### Filament console commands
 
