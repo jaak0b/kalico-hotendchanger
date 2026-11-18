@@ -16,6 +16,18 @@ ALL_STATES = (
     STATE_UNKNOWN,
 )
 
+PIN_TRIGGERED = "triggered"
+PIN_UNTRIGGERED = "untriggered"
+
+PRESENCE_MOUNTED = "mounted"
+PRESENCE_DOCKED = "docked"
+PRESENCE_NOT_MOUNTED = "not_mounted"
+PRESENCE_MISSING = "missing"
+PRESENCE_CONFLICT = "conflict"
+PRESENCE_CHANGING = "changing"
+PRESENCE_UNKNOWN = "unknown"
+PRESENCE_INVALID = "invalid"
+
 DETECT_MOUNTED = "mounted"
 DETECT_NONE = "none_mounted"
 DETECT_UNIDENTIFIED = "unidentified_mounted"
@@ -228,11 +240,57 @@ def describe_tool(tool_number):
 
 
 def describe_pin_state(state):
-    return "triggered" if state else "untriggered"
+    return PIN_TRIGGERED if state else PIN_UNTRIGGERED
 
 
 def describe_optional_pin(pin, state):
     return describe_pin_state(state) if pin is not None else None
+
+
+def pin_reading_triggered(reading):
+    if reading == PIN_TRIGGERED:
+        return True
+    if reading == PIN_UNTRIGGERED:
+        return False
+    if reading is None:
+        return None
+    raise ValueError("unhandled pin reading %r" % (reading,))
+
+
+def state_leaves_mount_unidentified(state):
+    if state == STATE_UNKNOWN:
+        return True
+    if state == STATE_UNINITIALIZED:
+        return True
+    if state == STATE_READY:
+        return False
+    if state == STATE_ERROR:
+        return False
+    if state == STATE_CHANGING:
+        return False
+    raise ValueError("unhandled hotendchanger state %r" % (state,))
+
+
+def tool_presence(state, active_tool, tool_number, dock_reading, toolhead_reading):
+    unidentified = state_leaves_mount_unidentified(state)
+    docked = pin_reading_triggered(dock_reading)
+    toolhead_present = pin_reading_triggered(toolhead_reading)
+    if state == STATE_CHANGING:
+        return PRESENCE_DOCKED if docked else PRESENCE_CHANGING
+    if active_tool == tool_number:
+        # The toolhead pin is not consulted: a lost tool is declared by the
+        # loss handling clearing the active tool, not by this readout.
+        return PRESENCE_CONFLICT if docked else PRESENCE_MOUNTED
+    if docked:
+        return PRESENCE_DOCKED
+    if active_tool is None and (toolhead_present is True or unidentified):
+        return PRESENCE_UNKNOWN
+    if docked is False:
+        return PRESENCE_MISSING
+    if docked is None:
+        return PRESENCE_NOT_MOUNTED
+    # pin_reading_triggered maps every reading to True, False or None.
+    raise ValueError("unhandled dock pin reading %r" % (dock_reading,))
 
 
 def describe_pin_states(pin_states):
@@ -595,6 +653,7 @@ class Hotendchanger:
         self.detect_report_time = config.getfloat(
             "detect_report_time", 0.05, above=0.0
         )
+        self.presence_errors_logged = set()
         self.filament_reply_timeout = config.getfloat(
             "filament_reply_timeout", 10.0, above=0.0
         )
@@ -1397,14 +1456,18 @@ class Hotendchanger:
             % (describe_tool(self.detected_tool),),
             "state: %s" % (self.state,),
         ]
+        toolhead_reading = describe_optional_pin(
+            self.toolhead_detect_pin, self.toolhead_state
+        )
         for n in sorted(self.tools):
             tool = self.tools[n]
             reading = describe_optional_pin(tool.detect_pin, tool.detect_state)
             if reading is not None:
                 rows.append("%s detect_pin: %s" % (tool.name, reading))
-        toolhead_reading = describe_optional_pin(
-            self.toolhead_detect_pin, self.toolhead_state
-        )
+            rows.append(
+                "%s presence: %s"
+                % (tool.name, self._presence(tool, reading, toolhead_reading))
+            )
         if toolhead_reading is not None:
             rows.append("toolhead_detect_pin: %s" % (toolhead_reading,))
         motion_queue = self._stepper_motion_queue()
@@ -1470,27 +1533,50 @@ class Hotendchanger:
     def _stepper_motion_queue(self):
         return getattr(self.carrier_stepper, "motion_queue", None)
 
+    def _presence(self, tool, dock_reading, toolhead_reading):
+        try:
+            return tool_presence(
+                self.state,
+                self.active_tool,
+                tool.tool_number,
+                dock_reading,
+                toolhead_reading,
+            )
+        except ValueError as e:
+            # Status reporting must not raise, so an input outside the
+            # handled sets is published as an invalid marker and logged once
+            # per distinct cause instead of on every status poll.
+            message = "%s presence: %s" % (tool.name, e)
+            if message not in self.presence_errors_logged:
+                self.presence_errors_logged.add(message)
+                logging.exception("hotendchanger: %s", message)
+            return PRESENCE_INVALID
+
+    def _tool_status(self, tool, toolhead_reading):
+        dock_reading = describe_optional_pin(tool.detect_pin, tool.detect_state)
+        return {
+            "number": tool.tool_number,
+            "extruder": tool.extruder_name,
+            "gcode_x_offset": tool.offset[0],
+            "gcode_y_offset": tool.offset[1],
+            "gcode_z_offset": tool.offset[2],
+            "detect": dock_reading,
+            "presence": self._presence(tool, dock_reading, toolhead_reading),
+        }
+
     def get_status(self, eventtime):
+        toolhead_reading = describe_optional_pin(
+            self.toolhead_detect_pin, self.toolhead_state
+        )
         return {
             "active_tool": self.active_tool,
             "detected_tool": self.detected_tool,
             "state": self.state,
-            "toolhead_detect": describe_optional_pin(
-                self.toolhead_detect_pin, self.toolhead_state
-            ),
+            "toolhead_detect": toolhead_reading,
             "stepper_motion_queue": self._stepper_motion_queue(),
             "tools": {
-                tool.name: {
-                    "number": n,
-                    "extruder": tool.extruder_name,
-                    "gcode_x_offset": tool.offset[0],
-                    "gcode_y_offset": tool.offset[1],
-                    "gcode_z_offset": tool.offset[2],
-                    "detect": describe_optional_pin(
-                        tool.detect_pin, tool.detect_state
-                    ),
-                }
-                for n, tool in self.tools.items()
+                tool.name: self._tool_status(tool, toolhead_reading)
+                for tool in self.tools.values()
             },
         }
 

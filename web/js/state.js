@@ -7,20 +7,16 @@ export const CHANGER_CHANGING = "changing";
 export const CHANGER_ERROR = "error";
 export const CHANGER_UNKNOWN = "unknown";
 
-// Detect pin readings (hotendchanger.py describe_optional_pin): null when
-// the pin is not configured. A triggered dock pin means the hotend sits in
-// its dock; a triggered toolhead pin means some hotend is on the toolhead.
-const PIN_TRIGGERED = "triggered";
-const PIN_UNTRIGGERED = "untriggered";
-
-export const CHIP_UNKNOWN = { label: "Unknown", color: "warning" };
-export const CHIP_CHANGING = { label: "Changing", color: "info" };
-export const CHIP_DOCKED = { label: "Docked", color: "success" };
-export const CHIP_CHECK_TOOL = { label: "Check tool", color: "error" };
-export const CHIP_MOUNTED = { label: "Mounted", color: "primary" };
-export const CHIP_NOT_DETECTED = { label: "Not detected", color: "warning" };
-export const CHIP_MISSING = { label: "Missing", color: "error" };
-export const CHIP_NOT_MOUNTED = { label: "Not mounted", color: "grey" };
+// The plugin's per-tool presence set (hotendchanger.py PRESENCE_*).
+const PRESENCE_CHIPS = {
+  mounted: { label: "Mounted", color: "primary" },
+  docked: { label: "Docked", color: "success" },
+  not_mounted: { label: "Not mounted", color: "grey" },
+  missing: { label: "Missing", color: "error" },
+  conflict: { label: "Conflict", color: "error" },
+  changing: { label: "Changing", color: "info" },
+  unknown: { label: "Unknown", color: "warning" },
+};
 
 export function sortedTools(changerTools) {
   return Object.entries(changerTools)
@@ -36,71 +32,11 @@ export function pinText(reading) {
   return reading === null ? "not configured" : String(reading);
 }
 
-function rawChip(value) {
-  return { label: String(value), color: "error" };
-}
-
-function stateChip(state) {
-  return { label: state, color: changerStateColor(state) };
-}
-
-function isChangerState(state) {
-  if (state === CHANGER_UNINITIALIZED) return true;
-  if (state === CHANGER_READY) return true;
-  if (state === CHANGER_CHANGING) return true;
-  if (state === CHANGER_ERROR) return true;
-  if (state === CHANGER_UNKNOWN) return true;
-  return false;
-}
-
-function isPinReading(reading) {
-  if (reading === PIN_TRIGGERED) return true;
-  if (reading === PIN_UNTRIGGERED) return true;
-  if (reading === null) return true;
-  return false;
-}
-
-// The plugin reads an untriggered toolhead pin as no hotend mounted
-// (hotendchanger.py:1438-1443) but declares a tool loss, with state error,
-// only after detect_settle_time (hotendchanger.py:928-931).
-function activeToolChip(state, docked, toolhead) {
-  if (docked) return CHIP_CHECK_TOOL;
-  if (toolhead === PIN_TRIGGERED) return CHIP_MOUNTED;
-  if (toolhead === null) return CHIP_MOUNTED;
-  if (toolhead === PIN_UNTRIGGERED) {
-    if (state === CHANGER_READY) return CHIP_NOT_DETECTED;
-    if (state === CHANGER_ERROR) return stateChip(state);
-    if (state === CHANGER_UNKNOWN) return stateChip(state);
-    if (state === CHANGER_UNINITIALIZED) return stateChip(state);
-    if (state === CHANGER_CHANGING) return stateChip(state);
-    return rawChip(state);
-  }
-  return rawChip(toolhead);
-}
-
-export function toolChip(tool, changer) {
-  const state = changer.state;
-  const toolhead = changer.toolhead_detect;
-  if (!isChangerState(state)) return rawChip(state);
-  if (!isPinReading(tool.detect)) return rawChip(tool.detect);
-  if (!isPinReading(toolhead)) return rawChip(toolhead);
-  const docked = tool.detect === PIN_TRIGGERED;
-  if (state === CHANGER_CHANGING) {
-    return docked ? CHIP_DOCKED : CHIP_CHANGING;
-  }
-  if (changer.active_tool === tool.number) {
-    return activeToolChip(state, docked, toolhead);
-  }
-  if (docked) return CHIP_DOCKED;
-  if (
-    changer.active_tool === null &&
-    (state === CHANGER_UNKNOWN || toolhead === PIN_TRIGGERED)
-  ) {
-    return CHIP_UNKNOWN;
-  }
-  if (tool.detect === PIN_UNTRIGGERED) return CHIP_MISSING;
-  if (tool.detect === null) return CHIP_NOT_MOUNTED;
-  return rawChip(tool.detect);
+export function presenceChip(presence) {
+  if (Object.hasOwn(PRESENCE_CHIPS, presence)) return PRESENCE_CHIPS[presence];
+  // A missing or unrecognised value is shown as a problem rather than
+  // hidden.
+  return { label: String(presence), color: "error" };
 }
 
 export function changerStateColor(state) {

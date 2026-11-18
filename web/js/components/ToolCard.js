@@ -7,7 +7,7 @@ import {
   changerStateColor,
   formatTemperatures,
   pinText,
-  toolChip,
+  presenceChip,
 } from "../state.js";
 
 export default {
@@ -35,7 +35,7 @@ export default {
       return this.state.changer;
     },
     chip() {
-      return toolChip(this.tool, this.changer);
+      return presenceChip(this.tool.presence);
     },
     stateColor() {
       return changerStateColor(this.changer.state);

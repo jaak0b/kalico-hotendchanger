@@ -34,6 +34,7 @@ from hotendchanger import (
     print_state_is_active,
     resolve_detection,
     state_after_discovery,
+    tool_presence,
     validate_detect_pin_coverage,
     validate_stepper_carrier,
     validate_tool_extruders,
@@ -574,3 +575,78 @@ class TestOffsetLedger:
         ledger = OffsetLedger()
         _, drift = ledger.plan((0.0, 0.0, 0.7), (0.0, 0.0, 0.0))
         assert drift == (0.0, 0.0, 0.0)
+
+
+class TestToolPresence:
+    # Inputs and expectations are the published wire values: state, active
+    # tool, this tool's number, dock pin reading, toolhead pin reading.
+    @pytest.mark.parametrize(
+        "state, active, number, dock, toolhead, expected",
+        [
+            ("changing", 0, 1, "triggered", "triggered", "docked"),
+            ("changing", 1, 1, "triggered", None, "docked"),
+            ("changing", 1, 1, "untriggered", "triggered", "changing"),
+            ("changing", None, 1, None, None, "changing"),
+            ("ready", 1, 1, "triggered", "triggered", "conflict"),
+            ("ready", 1, 1, "untriggered", "triggered", "mounted"),
+            ("ready", 1, 1, "untriggered", "untriggered", "mounted"),
+            ("ready", 1, 1, None, None, "mounted"),
+            ("error", 1, 1, None, "untriggered", "mounted"),
+            ("unknown", None, 1, "triggered", "triggered", "docked"),
+            ("ready", 0, 1, "triggered", "untriggered", "docked"),
+            ("ready", None, 1, "untriggered", "triggered", "unknown"),
+            ("unknown", None, 1, "untriggered", None, "unknown"),
+            ("uninitialized", None, 1, "untriggered", "untriggered", "unknown"),
+            ("uninitialized", None, 1, None, None, "unknown"),
+            ("ready", 0, 1, "untriggered", "triggered", "missing"),
+            ("ready", None, 1, "untriggered", "untriggered", "missing"),
+            ("error", None, 1, "untriggered", None, "missing"),
+            ("error", None, 1, None, None, "not_mounted"),
+            ("ready", None, 1, None, "untriggered", "not_mounted"),
+            ("unknown", 0, 1, None, None, "not_mounted"),
+        ],
+        ids=[
+            "changing with dock triggered is docked even while another tool is active",
+            "changing with own dock triggered is docked even as the active tool",
+            "changing with dock untriggered is changing",
+            "changing without pins is changing",
+            "active tool with its own dock triggered is a conflict",
+            "active tool with dock untriggered is mounted",
+            "active tool stays mounted while the toolhead pin reads open",
+            "active tool without pins is mounted",
+            "active tool is mounted whatever the changer state",
+            "inactive tool with dock triggered is docked in the unknown state",
+            "inactive tool with dock triggered is docked while another is active",
+            "no active tool and toolhead triggered is unknown",
+            "no active tool in the unknown state with dock open is unknown",
+            "uninitialized with no active tool is unknown",
+            "uninitialized without pins is unknown",
+            "dock open while another tool is active is missing",
+            "dock open with no active tool and toolhead open is missing",
+            "dock open in the error state with no active tool is missing",
+            "error state without pins and no active tool is not mounted",
+            "no dock pin and toolhead open is not mounted",
+            "no dock pin while another tool is active is not mounted",
+        ],
+    )
+    def test_presence(self, state, active, number, dock, toolhead, expected):
+        assert tool_presence(state, active, number, dock, toolhead) == expected
+
+    @pytest.mark.parametrize(
+        "state, dock, toolhead",
+        [
+            ("paused", "untriggered", None),
+            ("ready", "open", None),
+            ("ready", None, "open"),
+            ("ready", True, None),
+        ],
+        ids=[
+            "unrecognised state",
+            "unrecognised dock reading",
+            "unrecognised toolhead reading",
+            "raw boolean instead of a reading",
+        ],
+    )
+    def test_unrecognised_input_raises(self, state, dock, toolhead):
+        with pytest.raises(ValueError):
+            tool_presence(state, None, 1, dock, toolhead)

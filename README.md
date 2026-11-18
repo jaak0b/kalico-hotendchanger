@@ -112,8 +112,8 @@ tool is active, the new offset is applied immediately. With `SAVE=1` the
 values are staged so a subsequent `SAVE_CONFIG` persists them.
 
 `HOTENDCHANGER_STATUS`: print labeled rows: active tool, detected tool,
-state, each configured detect pin's reading, the toolhead detect pin's
-reading, the extruder stepper's motion queue (`none` when detached), and
+state, each configured detect pin's reading, each tool's presence, the
+toolhead detect pin's reading, the extruder stepper's motion queue (`none` when detached), and
 each tool's current offset and extruder section.
 
 `INITIALIZE_HOTENDCHANGER [T=<n>]`: re-run detection from the configured
@@ -130,8 +130,27 @@ Macros and the web interface can read `printer.hotendchanger`:
 `stepper_motion_queue` (the extruder section the stepper is synced to,
 or null when detached), and a `tools` dictionary keyed by tool name
 (`"T0"` style) whose entries carry `number`, `extruder`,
-`gcode_x_offset`, `gcode_y_offset`, `gcode_z_offset` and `detect` (the
-pin reading, or null without a pin).
+`gcode_x_offset`, `gcode_y_offset`, `gcode_z_offset`, `detect` (the
+pin reading, or null without a pin) and `presence` (where the tool is,
+see [Tool presence](#tool-presence)). A macro reads one tool's presence
+as `printer.hotendchanger.tools.T0.presence`.
+
+### Tool presence
+
+The plugin publishes one presence value per tool. The first matching
+rule applies; the rules are listed in evaluation order.
+
+| Presence | Rule |
+| --- | --- |
+| `docked` or `changing` | A tool change is in progress: `docked` if this tool's dock pin is triggered, otherwise `changing`. |
+| `conflict` or `mounted` | This is the active tool: `conflict` if its own dock pin is triggered, otherwise `mounted`. The toolhead pin is not consulted; a lost tool is reported by the plugin clearing the active tool. |
+| `docked` | This is not the active tool and its dock pin is triggered. |
+| `unknown` | No tool is active, and the toolhead pin is triggered or the state is `unknown` or `uninitialized`. |
+| `missing` | This tool has a dock pin and it is not triggered. |
+| `not_mounted` | This tool has no dock pin. |
+
+If an input is outside these sets, the value is `invalid` and the cause
+is written once to klippy.log.
 
 ## Nozzle offset calibration
 
@@ -372,23 +391,19 @@ Press Escape or click the close button in the top bar to return to
 Mainsail; while a dialog or menu is open, Escape closes only that dialog
 or menu.
 
-The chip is derived from the changer state, the tool's dock pin
-(`detect_pin`) and the toolhead pin. The first matching row applies; the
-rows are listed in evaluation order.
+The chip shows the plugin's `presence` value for the tool (see
+[Tool presence](#tool-presence)); the page does not derive it.
 
-| Chip | Color | Condition |
+| Chip | Color | Presence |
 | --- | --- | --- |
-| The state or pin reading itself | Red | The changer state is not one of `uninitialized`, `ready`, `changing`, `error` or `unknown`, or a pin reading is not `triggered`, `untriggered` or not configured. |
-| Docked | Green | A tool change is in progress and this tool's dock pin is triggered. |
-| Changing | Blue | A tool change is in progress and this tool's dock pin is not triggered. |
-| Check tool | Red | This is the active tool, but its dock pin is triggered. |
-| Mounted | Primary | This is the active tool, its dock pin is not triggered, and the toolhead pin is triggered or not configured. |
-| Not detected | Yellow | This is the active tool, its dock pin is not triggered, the toolhead pin is untriggered and the changer state is `ready`. |
-| The changer state (`error`, `unknown` or `uninitialized`) | Red for `error`, yellow for the others | This is the active tool, its dock pin is not triggered, the toolhead pin is untriggered and the changer state is not `ready`. |
-| Docked | Green | This is not the active tool and its dock pin is triggered. |
-| Unknown | Yellow | This is not the active tool, its dock pin is not triggered, no tool is active, and the changer state is `unknown` or the toolhead pin is triggered. |
-| Missing | Red | This is not the active tool, none of the rows above apply, and its dock pin is untriggered. |
-| Not mounted | Gray | This is not the active tool, none of the rows above apply, and no dock pin is configured. |
+| Mounted | Primary | `mounted` |
+| Docked | Green | `docked` |
+| Not mounted | Gray | `not_mounted` |
+| Missing | Red | `missing` |
+| Conflict | Red | `conflict` |
+| Changing | Blue | `changing` |
+| Unknown | Yellow | `unknown` |
+| The value itself | Red | Any other value, including `invalid` or a missing value. |
 
 Mount and Dock are disabled while a print is running or paused, and
 during a tool change; the card names the reason. Errors from Klipper and from the
