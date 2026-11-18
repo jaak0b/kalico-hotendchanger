@@ -5,13 +5,17 @@
 # the web page into the Mainsail nginx site.
 #
 # Usage: ./install.sh [--filament-service | --no-filament-service]
-#                     [--printer-data DIR] [--nginx-site FILE] [FIRMWARE_DIR]
+#                     [--printer-data DIR] [--nginx-site FILE]
+#                     [--web-url URL] [FIRMWARE_DIR]
 # FIRMWARE_DIR can also be given via the KALICO_DIR environment variable.
 # Defaults to $HOME/klipper, the usual location of the checkout the klippy
 # service runs from. --printer-data defaults to $HOME/printer_data.
 # --nginx-site defaults to /etc/nginx/sites-available/mainsail, where KIAUH
 # (kiauh/components/webui_client/mainsail_data.py:45) and MainsailOS
 # (modules/generic/52-mainsail:34) install the Mainsail site.
+# --web-url is the address the web page is opened with in the browser; the
+# filament service prints it to the console each time Klipper becomes ready.
+# Without it the script asks, suggesting http://<hostname>/hotendchanger/.
 
 set -e
 
@@ -30,13 +34,14 @@ NAVI_TITLE=Hotendchanger
 NAVI_ICON='M7,2H17V8H19V13H16.5L13,17H11L7.5,13H5V8H7V2M10,22H2V20H10A1,1 0 0,0 11,19V18H13V19A3,3 0 0,1 10,22Z'
 
 usage() {
-    echo "Usage: $0 [--filament-service | --no-filament-service] [--printer-data DIR] [--nginx-site FILE] [FIRMWARE_DIR]"
+    echo "Usage: $0 [--filament-service | --no-filament-service] [--printer-data DIR] [--nginx-site FILE] [--web-url URL] [FIRMWARE_DIR]"
 }
 
 COMPONENTS=
 TARGET_ARG=
 PRINTER_DATA_DIR=
 NGINX_SITE=/etc/nginx/sites-available/mainsail
+WEB_URL=
 while [ $# -gt 0 ]; do
     case "$1" in
         --filament-service)
@@ -66,6 +71,17 @@ while [ $# -gt 0 ]; do
             ;;
         --nginx-site=*)
             NGINX_SITE="${1#--nginx-site=}"
+            ;;
+        --web-url)
+            if [ $# -lt 2 ]; then
+                echo "install.sh: --web-url needs a URL" >&2
+                exit 1
+            fi
+            shift
+            WEB_URL="$1"
+            ;;
+        --web-url=*)
+            WEB_URL="${1#--web-url=}"
             ;;
         -h|--help)
             usage
@@ -106,6 +122,11 @@ if [ -z "$COMPONENTS" ]; then
             exit 1
             ;;
     esac
+fi
+
+if [ "$COMPONENTS" = core ] && [ -n "$WEB_URL" ]; then
+    echo "install.sh: --web-url applies only with --filament-service, which installs the web page" >&2
+    exit 1
 fi
 
 for f in $PLUGIN_FILES; do
@@ -166,6 +187,29 @@ if [ "$COMPONENTS" = service ]; then
         echo "install.sh: $CONFIG_DIR not found; pass Moonraker's data directory with --printer-data" >&2
         exit 1
     fi
+    if [ -z "$WEB_URL" ]; then
+        if [ ! -t 0 ]; then
+            echo "install.sh: pass --web-url with the address you will open the web page with, such as http://<printer>$WEB_URL_PATH, when running non-interactively" >&2
+            exit 1
+        fi
+        WEB_URL_SUGGESTION="http://$(hostname)$WEB_URL_PATH"
+        echo "Enter the address you will open the web page with in your browser."
+        echo "It is your Mainsail address followed by $WEB_URL_PATH"
+        printf "Web page address [press Enter for %s]: " "$WEB_URL_SUGGESTION"
+        read -r WEB_URL
+        WEB_URL=${WEB_URL:-$WEB_URL_SUGGESTION}
+    fi
+    "$PYTHON" - "$SERVICE_DIR" "$WEB_URL" <<'WEB_URL_PY' || exit 1
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import filament_library
+
+try:
+    filament_library.check_web_url(sys.argv[2])
+except filament_library.LibraryError as e:
+    sys.exit("install.sh: %s Pass the address with --web-url." % (e,))
+WEB_URL_PY
 fi
 
 TARGET_DIR="${TARGET_ARG:-${KALICO_DIR:-}}"
@@ -238,12 +282,19 @@ sed_escape() {
     printf '%s' "$1" | sed -e 's/[\\|&]/\\&/g'
 }
 
+# systemd expands % specifiers and $ variables inside ExecStart arguments,
+# even in double quotes (systemd.service(5) "Command lines").
+systemd_escape() {
+    printf '%s' "$1" | sed -e 's/%/%%/g' -e 's/\$/$$/g'
+}
+
 UNIT_TMP=$(mktemp)
 trap 'rm -f "$UNIT_TMP"' EXIT
 sed -e "s|@USER@|$(sed_escape "$(id -un)")|" \
     -e "s|@PYTHON@|$(sed_escape "$PYTHON")|" \
     -e "s|@SERVICE_DIR@|$(sed_escape "$SERVICE_DIR")|" \
     -e "s|@SOCKET@|$(sed_escape "$SOCKET_PATH")|" \
+    -e "s|@WEB_URL@|$(sed_escape "$(systemd_escape "$WEB_URL")")|" \
     "$SERVICE_DIR/$SERVICE_NAME.service" > "$UNIT_TMP"
 
 echo "install.sh: installing /etc/systemd/system/$SERVICE_NAME.service (needs sudo)"
@@ -339,7 +390,7 @@ sudo systemctl reload nginx || {
     echo "install.sh: nginx accepted the configuration but did not reload; check it with: systemctl status nginx" >&2
     exit 1
 }
-echo "install.sh: web page installed at http://<printer>$WEB_URL_PATH"
+echo "install.sh: web page installed at $WEB_URL"
 
 NAVI_FILE="$CONFIG_DIR/.theme/navi.json"
 # Mainsail reads custom sidebar links from .theme/navi.json in the config

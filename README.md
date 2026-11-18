@@ -310,6 +310,13 @@ The filament service install also serves a page at
 `http://<printer>/hotendchanger/` and adds a Hotendchanger link to
 Mainsail's sidebar.
 
+`install.sh` asks for the address you open the page with in your
+browser, suggesting `http://<hostname>/hotendchanger/`. Pass
+`--web-url URL` to skip the question; it is required when the script runs
+non-interactively. Each time Klipper becomes ready, the filament service
+prints the address to the console as a link. To change the address, run
+`install.sh --filament-service --web-url URL` again.
+
 **Add the network you browse from to `trusted_clients` in the
 `[authorization]` section of moonraker.conf.** The page has no login, so
 Moonraker refuses it from any other network.
@@ -354,6 +361,8 @@ What `install.sh` changes for the page:
   restored and the script stops.
 - It adds the sidebar link to `<printer_data>/config/.theme/navi.json`,
   keeping existing entries.
+- It passes the address to the filament service as `--web-url` in
+  `/etc/systemd/system/hotendchanger-filament.service`.
 
 nginx must be able to read `web/`. If it cannot, the script stops and
 names the file; check the permissions along the path with
@@ -367,6 +376,9 @@ To remove the page:
    `sudo nginx -t && sudo systemctl reload nginx`.
 3. Delete the Hotendchanger entry from
    `~/printer_data/config/.theme/navi.json`.
+4. Delete the `--web-url` argument from the `ExecStart` line of
+   `/etc/systemd/system/hotendchanger-filament.service`, then run
+   `sudo systemctl daemon-reload && sudo systemctl restart hotendchanger-filament`.
 
 ## Config reference
 

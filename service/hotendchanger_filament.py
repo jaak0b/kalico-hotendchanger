@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import sys
 import uuid
 
 import filament_library as lib
@@ -32,7 +33,8 @@ def service_version():
 
 
 class FilamentService:
-    def __init__(self, socket_path):
+    def __init__(self, socket_path, web_url):
+        self.web_url = web_url
         self.store = None
         self.store_error = None
         self.tools = None
@@ -64,7 +66,7 @@ class FilamentService:
             info = await self.agent.call("server.info")
             klippy_state = info.get("klippy_state")
             if klippy_state == "ready":
-                await self._subscribe()
+                await self._klippy_ready()
             else:
                 logging.info(
                     "Klipper state is %r; waiting for it to become ready",
@@ -112,6 +114,13 @@ class FilamentService:
                 self.store_error or "The filament library is not loaded yet."
             )
         return self.store
+
+    async def _klippy_ready(self):
+        if self.web_url is not None:
+            self._schedule_reply(
+                lib.REPLY_ANNOUNCE, lib.web_page_announcement(self.web_url), None
+            )
+        await self._subscribe()
 
     async def _subscribe(self):
         result = await self.agent.call(
@@ -241,7 +250,7 @@ class FilamentService:
     async def handle_notification(self, method, params):
         async with self.lock:
             if method == "notify_klippy_ready":
-                await self._subscribe()
+                await self._klippy_ready()
             elif method == "notify_klippy_disconnected":
                 self.tools = None
             elif method == "notify_klippy_shutdown":
@@ -285,6 +294,9 @@ class FilamentService:
             kind, text = lib.REPLY_ERROR, str(e)
         except RpcError as e:
             kind, text = lib.REPLY_ERROR, "Moonraker request failed: %s" % (e.message,)
+        self._schedule_reply(kind, text, request)
+
+    def _schedule_reply(self, kind, text, request):
         task = asyncio.ensure_future(self._reply(kind, text, request))
         self.reply_tasks.add(task)
         task.add_done_callback(self.reply_tasks.discard)
@@ -301,12 +313,19 @@ class FilamentService:
             logging.error("Could not print the console reply %r: %s", text, e)
 
 
-async def run(socket_path):
-    service = FilamentService(socket_path)
+async def run(socket_path, web_url):
+    service = FilamentService(socket_path, web_url)
     await service.agent.run_forever()
 
 
-def main():
+def web_url_argument(value):
+    try:
+        return lib.check_web_url(value)
+    except lib.LibraryError as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
+def parse_args(argv):
     parser = argparse.ArgumentParser(
         description="Per-tool filament library for hotendchanger printers,"
         " published to Moonraker's lane_data namespace."
@@ -316,11 +335,21 @@ def main():
         required=True,
         help="path to Moonraker's unix socket, <printer_data>/comms/moonraker.sock",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--web-url",
+        type=web_url_argument,
+        help="address of the hotendchanger web page, printed to the console"
+        " each time Klipper becomes ready; omit it when the page is not installed",
+    )
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_args(sys.argv[1:])
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
-    asyncio.run(run(args.socket))
+    asyncio.run(run(args.socket, args.web_url))
 
 
 if __name__ == "__main__":

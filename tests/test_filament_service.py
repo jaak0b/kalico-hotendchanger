@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+import shlex
 import sys
 
 import pytest
@@ -23,6 +25,7 @@ class FakeMoonraker:
         self.database = database or {}
         self.posted = []
         self.events = []
+        self.scripts = []
 
     async def call(self, method, params=None):
         if method == self.fail_method:
@@ -37,11 +40,16 @@ class FakeMoonraker:
         if method == "connection.send_event":
             self.events.append(params)
             return "ok"
+        if method == "printer.objects.subscribe":
+            return {"status": {"hotendchanger": {"tools": {"T0": {"number": 0}}}}}
+        if method == "printer.gcode.script":
+            self.scripts.append(params["script"])
+            return "ok"
         raise AssertionError("unexpected Moonraker call %s" % (method,))
 
 
-def service_with(moonraker, store=None, tools=None):
-    service = hotendchanger_filament.FilamentService("/unused.sock")
+def service_with(moonraker, store=None, tools=None, web_url=None):
+    service = hotendchanger_filament.FilamentService("/unused.sock", web_url)
     service.store = store
     service.tools = tools
     service.agent.call = moonraker.call
@@ -218,3 +226,69 @@ def test_library_of_unknown_version_is_refused_with_its_location():
         " filament service does not know. Update the filament service to the"
         " version that wrote it, or restore the library from a database backup."
     }
+
+
+def klippy_ready(service):
+    async def run():
+        await service.handle_notification("notify_klippy_ready", None)
+        await asyncio.gather(*service.reply_tasks)
+
+    asyncio.run(run())
+
+
+def test_klippy_ready_prints_the_web_page_link_to_the_console():
+    moonraker = FakeMoonraker()
+    service = service_with(
+        moonraker, {"filaments": {}, "assignments": {}}, web_url="http://v2/hotendchanger/"
+    )
+    klippy_ready(service)
+    [script] = moonraker.scripts
+    command, raw = script.split(" ", 1)
+    # Klipper splits extended parameters with shlex in posix mode
+    # (klippy/gcode.py:715-731 Kalico, :266-281 Klipper).
+    params = dict(arg.split("=", 1) for arg in shlex.split(raw))
+    assert command == "_HOTENDCHANGER_FILAMENT_REPLY"
+    assert params["KIND"] == "announce"
+    assert json.loads(params["MSG"]) == (
+        'Hotendchanger web page:'
+        ' <a href="http://v2/hotendchanger/">http://v2/hotendchanger/</a>'
+    )
+
+
+def test_klippy_ready_prints_nothing_without_a_web_page_address():
+    moonraker = FakeMoonraker()
+    service = service_with(moonraker, {"filaments": {}, "assignments": {}})
+    klippy_ready(service)
+    assert moonraker.scripts == []
+
+
+def test_failed_web_page_link_print_is_logged(caplog):
+    moonraker = FakeMoonraker(
+        "printer.gcode.script", RpcError(400, "Unknown command:\"_HOTENDCHANGER_FILAMENT_REPLY\"")
+    )
+    service = service_with(
+        moonraker, {"filaments": {}, "assignments": {}}, web_url="http://v2/hotendchanger/"
+    )
+    klippy_ready(service)
+    assert "Unknown command" in caplog.text
+    assert service.tools == {"T0": 0}
+
+
+def test_web_url_argument_is_optional():
+    args = hotendchanger_filament.parse_args(["--socket", "/tmp/moonraker.sock"])
+    assert args.web_url is None
+
+
+def test_web_url_argument_is_passed_through():
+    args = hotendchanger_filament.parse_args(
+        ["--socket", "/tmp/moonraker.sock", "--web-url", "https://v2/hotendchanger/"]
+    )
+    assert args.web_url == "https://v2/hotendchanger/"
+
+
+def test_web_url_argument_without_scheme_stops_with_the_reason(capsys):
+    with pytest.raises(SystemExit):
+        hotendchanger_filament.parse_args(
+            ["--socket", "/tmp/moonraker.sock", "--web-url", "v2/hotendchanger/"]
+        )
+    assert "must start with http:// or https://" in capsys.readouterr().err

@@ -7,7 +7,7 @@ Wants=moonraker.service
 [Service]
 Type=simple
 User=@USER@
-ExecStart=@PYTHON@ "@SERVICE_DIR@/hotendchanger_filament.py" --socket "@SOCKET@"
+ExecStart=@PYTHON@ "@SERVICE_DIR@/hotendchanger_filament.py" --socket "@SOCKET@" --web-url "@WEB_URL@"
 Restart=always
 RestartSec=10
 

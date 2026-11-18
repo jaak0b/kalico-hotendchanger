@@ -48,6 +48,7 @@ FILAMENT_SERVICE_UNIT = "hotendchanger-filament"
 FILAMENT_REPLY_COMMAND = "_HOTENDCHANGER_FILAMENT_REPLY"
 FILAMENT_REPLY_INFO = "info"
 FILAMENT_REPLY_ERROR = "error"
+FILAMENT_REPLY_ANNOUNCE = "announce"
 FILAMENT_CONSOLE_COMMANDS = (
     (
         "HOTENDCHANGER_FILAMENT_ADD",
@@ -753,12 +754,9 @@ class Hotendchanger:
                 "%s received a malformed MSG; the filament service and this"
                 " plugin are from different versions." % (FILAMENT_REPLY_COMMAND,)
             )
-        request_id = gcmd.get("REQUEST", None)
-        if request_id is None:
-            raise gcmd.error(
-                "%s received no REQUEST; the filament service and this"
-                " plugin are from different versions." % (FILAMENT_REPLY_COMMAND,)
-            )
+        if kind == FILAMENT_REPLY_ANNOUNCE:
+            self.gcode.respond_info(text)
+            return
         if kind == FILAMENT_REPLY_INFO:
             respond = self.gcode.respond_info
         elif kind == FILAMENT_REPLY_ERROR:
@@ -768,6 +766,12 @@ class Hotendchanger:
                 "%s received unknown KIND=%s; the filament service and this"
                 " plugin are from different versions."
                 % (FILAMENT_REPLY_COMMAND, kind)
+            )
+        request_id = gcmd.get("REQUEST", None)
+        if request_id is None:
+            raise gcmd.error(
+                "%s received no REQUEST; the filament service and this"
+                " plugin are from different versions." % (FILAMENT_REPLY_COMMAND,)
             )
         self._cancel_filament_timer(request_id)
         match, command = self.filament_requests.reply(request_id)
