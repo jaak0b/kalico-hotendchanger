@@ -349,23 +349,39 @@ Moonraker refuses it from any other network.
 The page shows:
 
 - The connection state of Moonraker, Klipper and the filament service.
-- One card per configured tool: a state chip, the nozzle temperature as
-  current / target (to 0.1 °C), the loaded filament with its color, a
-  selector to change it, and the buttons **Heat to filament temperature**, **Off** and
-  **Mount** (`T<n>`). The mounted tool's card shows **Dock**
-  (`UNSELECT_TOOL`) instead of **Mount**.
+- One compact card per configured tool: the tool name, a state chip and
+  the nozzle temperature as current / target (to 0.1 °C) in the header;
+  the loaded filament, with a color dot you click to change the color;
+  a filament selector; and the buttons **Heat** (to the filament's nozzle
+  temperature), **Off** and **Mount** (`T<n>`). The mounted tool's card
+  shows **Dock** (`UNSELECT_TOOL`) instead of **Mount**. Each button has a
+  tooltip. A collapsed **Details** toggle shows the raw values:
+  Changer state, Dock pin, Toolhead pin and the nozzle heater name. The
+  grid shows 1 card per row on phones, 2 on tablets, 4 on desktops and 6
+  on very wide screens.
 - The filament library, with add, edit and delete.
 
 Choosing a filament in a tool card's selector opens a color picker; the
 tool changes only when you save a color. Click the color dot on a card to
 change only that tool's color.
 
-| Chip | Meaning |
-| --- | --- |
-| Mounted | The plugin's active tool. |
-| Docked | The tool's `detect_pin` reads the hotend in its dock. |
-| Not mounted | The plugin knows the mounted tool, and it is a different one or none. Without a dock pin this does not confirm the hotend is in its dock. |
-| Unknown | The plugin cannot tell which tool is mounted (state `unknown`, `uninitialized`, `changing` or `error`). The card shows the state. |
+The chip is derived from the changer state, the tool's dock pin
+(`detect_pin`) and the toolhead pin. The first matching row applies; the
+rows are listed in evaluation order.
+
+| Chip | Color | Condition |
+| --- | --- | --- |
+| The state or pin reading itself | Red | The changer state is not one of `uninitialized`, `ready`, `changing`, `error` or `unknown`, or a pin reading is not `triggered`, `untriggered` or not configured. |
+| Docked | Green | A tool change is in progress and this tool's dock pin is triggered. |
+| Changing | Blue | A tool change is in progress and this tool's dock pin is not triggered. |
+| Check tool | Red | This is the active tool, but its dock pin is triggered. |
+| Mounted | Primary | This is the active tool, its dock pin is not triggered, and the toolhead pin is triggered or not configured. |
+| Not detected | Yellow | This is the active tool, its dock pin is not triggered, the toolhead pin is untriggered and the changer state is `ready`. |
+| The changer state (`error`, `unknown` or `uninitialized`) | Red for `error`, yellow for the others | This is the active tool, its dock pin is not triggered, the toolhead pin is untriggered and the changer state is not `ready`. |
+| Docked | Green | This is not the active tool and its dock pin is triggered. |
+| Unknown | Yellow | This is not the active tool, its dock pin is not triggered, no tool is active, and the changer state is `unknown` or the toolhead pin is triggered. |
+| Missing | Red | This is not the active tool, none of the rows above apply, and its dock pin is untriggered. |
+| Not mounted | Gray | This is not the active tool, none of the rows above apply, and no dock pin is configured. |
 
 Mount and Dock are disabled while a print is running or paused, and
 during a tool change; the card names the reason. Errors from Klipper and from the

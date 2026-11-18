@@ -80,7 +80,7 @@ const App = {
           </v-alert>
 
           <v-row v-if="tools.length">
-            <v-col v-for="tool in tools" :key="tool.name" cols="12" md="6" xl="4">
+            <v-col v-for="tool in tools" :key="tool.name" cols="12" sm="6" md="3" xl="2">
               <tool-card :tool="tool" />
             </v-col>
           </v-row>

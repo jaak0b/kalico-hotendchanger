@@ -141,6 +141,10 @@ export function klippyStateColor(state) {
   return "error";
 }
 
-export function formatTemperature(value) {
-  return typeof value === "number" ? value.toFixed(1) + " °C" : "n/a";
+function temperatureValue(value) {
+  return typeof value === "number" ? value.toFixed(1) : "n/a";
+}
+
+export function formatTemperatures(current, target) {
+  return temperatureValue(current) + " / " + temperatureValue(target) + " °C";
 }

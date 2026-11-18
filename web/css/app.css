@@ -20,37 +20,79 @@ html, body {
   background: #272727 !important;
 }
 
+.hc-tool-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-height: 40px;
+  padding: 6px 12px;
+}
+
+.hc-tool-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-chip {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.hc-chip .v-chip__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-tool-temp {
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .hc-row {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding: 2px 0;
+  padding: 1px 0;
+}
+
+.hc-row > * {
+  min-width: 0;
 }
 
 .hc-label {
+  flex: none;
   color: rgba(255, 255, 255, 0.6);
+}
+
+.hc-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hc-filament {
   display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 56px;
-  padding: 8px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 4px;
+  gap: 10px;
+  min-height: 36px;
 }
 
-.hc-filament-empty {
-  border-style: dashed;
-  border-color: rgba(255, 255, 255, 0.3);
+.hc-filament-text {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .hc-swatch {
   display: inline-block;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.3);
 }
@@ -77,7 +119,23 @@ html, body {
 .hc-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 4px;
+}
+
+.hc-actions .v-btn {
+  padding: 0 8px;
+}
+
+.hc-actions .v-btn__prepend {
+  margin-inline-end: 4px;
+}
+
+.hc-tool-select .v-field {
+  font-size: 0.875rem;
+}
+
+.hc-details-toggle {
+  margin-left: -8px;
 }
 
 .hc-message {
