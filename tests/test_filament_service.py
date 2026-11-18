@@ -21,6 +21,7 @@ class FakeMoonraker:
         self.fail_method = fail_method
         self.failure = failure
         self.posted = []
+        self.events = []
 
     async def call(self, method, params=None):
         if method == self.fail_method:
@@ -30,6 +31,9 @@ class FakeMoonraker:
         if method == "server.database.post_item":
             self.posted.append(params)
             return {}
+        if method == "connection.send_event":
+            self.events.append(params)
+            return "ok"
         raise AssertionError("unexpected Moonraker call %s" % (method,))
 
 
@@ -103,3 +107,63 @@ def test_cancellation_is_not_turned_into_a_reply():
     service = service_with(moonraker, {"filaments": {"pla": dict(PLA)}, "assignments": {}})
     with pytest.raises(asyncio.CancelledError):
         request(service, "filaments.delete", {"id": "pla"})
+
+
+def test_saved_change_is_announced_to_open_pages():
+    moonraker = FakeMoonraker()
+    service = service_with(
+        moonraker, {"filaments": {"pla": dict(PLA)}, "assignments": {}}, {"T0": 0}
+    )
+    request(service, "tools.assign", {"tool": 0, "filament_id": "pla"})
+    assert moonraker.events == [{"event": "library_changed"}]
+
+
+def test_refused_change_is_not_announced():
+    moonraker = FakeMoonraker()
+    service = service_with(moonraker, {"filaments": {}, "assignments": {}}, {"T0": 0})
+    request(service, "tools.assign", {"tool": 4, "filament_id": None})
+    assert moonraker.events == []
+
+
+def test_read_only_request_is_not_announced():
+    moonraker = FakeMoonraker()
+    service = service_with(
+        moonraker, {"filaments": {"pla": dict(PLA)}, "assignments": {}}, {"T0": 0}
+    )
+    request(service, "filaments.list", {})
+    assert moonraker.events == []
+
+
+def test_failed_announcement_still_reports_the_saved_change(caplog):
+    moonraker = FakeMoonraker("connection.send_event", RpcError(-32601, "Method not found"))
+    service = service_with(moonraker, {"filaments": {"pla": dict(PLA)}, "assignments": {}})
+    assert request(service, "filaments.delete", {"id": "pla"}) == {
+        "result": {"deleted": "pla"}
+    }
+    assert "Method not found" in caplog.text
+
+
+def notify(service, method, params):
+    asyncio.run(service.handle_notification(method, params))
+
+
+def test_newly_known_tools_are_announced_to_open_pages():
+    moonraker = FakeMoonraker()
+    service = service_with(moonraker, {"filaments": {}, "assignments": {}})
+    notify(
+        service,
+        "notify_status_update",
+        [{"hotendchanger": {"tools": {"T0": {"number": 0}}}}, 1.0],
+    )
+    assert moonraker.events == [{"event": "library_changed"}]
+
+
+def test_unchanged_tools_are_not_announced():
+    moonraker = FakeMoonraker()
+    service = service_with(moonraker, {"filaments": {}, "assignments": {}}, {"T0": 0})
+    notify(
+        service,
+        "notify_status_update",
+        [{"hotendchanger": {"tools": {"T0": {"number": 0}}}}, 1.0],
+    )
+    assert moonraker.events == []

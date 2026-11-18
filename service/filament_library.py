@@ -10,6 +10,7 @@ STORE_KEY = "library"
 LANE_DATA_NAMESPACE = "lane_data"
 STATUS_OBJECT = "hotendchanger"
 STATUS_TOOLS_FIELD = "tools"
+CHANGE_EVENT = "library_changed"
 
 CONSOLE_REMOTE_METHOD = "hotendchanger_filament_console"
 REPLY_COMMAND = "_HOTENDCHANGER_FILAMENT_REPLY"

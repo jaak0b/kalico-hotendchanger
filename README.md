@@ -142,7 +142,7 @@ sudo service klipper restart
 ```
 
 `install.sh` asks whether to install the core plugin only or also the
-[filament service](#filament-service). Pass `--no-filament-service` or
+[filament service](#filament-service) and its [web page](#web-page). Pass `--no-filament-service` or
 `--filament-service` to skip the question; one of them is required when
 the script runs non-interactively.
 
@@ -188,7 +188,8 @@ no third-party packages). It connects to Moonraker through
 `~/printer_data/comms/moonraker.sock`; pass `--printer-data DIR` if
 Moonraker's data directory is elsewhere. The script also adds the unit to
 `moonraker.asvc` so Moonraker may restart it. Check the service with
-`systemctl status hotendchanger-filament`.
+`systemctl status hotendchanger-filament`. The same run installs the
+[web page](#web-page).
 
 With the service installed, use this update manager entry in place of the
 one above, so updates also restart the service:
@@ -268,6 +269,71 @@ A record is `{"id", "name", "material", "color", "nozzle_temp"}`, with
 tool still holds is refused. Assigning to a tool number missing from the
 Klipper config is refused; clearing is allowed so an assignment left on a
 removed tool can still be cleared.
+
+After every saved change, and whenever the list of configured tools
+changes, the service sends the agent event `library_changed`. Moonraker
+delivers it to other clients as `notify_agent_event` with
+`{"agent": "hotendchanger", "event": "library_changed"}`; reload
+`tools.list` and `filaments.list` when it arrives.
+
+## Web page
+
+The filament service install also serves a page at
+`http://<printer>/hotendchanger/` and adds a Hotendchanger link to
+Mainsail's sidebar.
+
+**Add the network you browse from to `trusted_clients` in the
+`[authorization]` section of moonraker.conf.** The page has no login, so
+Moonraker refuses it from any other network.
+
+The page shows:
+
+- The connection state of Moonraker, Klipper and the filament service.
+- One card per configured tool: a state chip, the nozzle temperature as
+  current / target (to 0.1 °C), the loaded filament, a selector to change
+  it, and the buttons **Heat to filament temperature**, **Off** and
+  **Mount** (`T<n>`).
+- The filament library, with add, edit and delete.
+
+| Chip | Meaning |
+| --- | --- |
+| Mounted | The plugin's active tool. |
+| Docked | The tool's `detect_pin` reads the hotend in its dock. |
+| Not mounted | The plugin knows the mounted tool, and it is a different one or none. Without a dock pin this does not confirm the hotend is in its dock. |
+| Unknown | The plugin cannot tell which tool is mounted (state `unknown`, `uninitialized`, `changing` or `error`). The card shows the state. |
+
+Mount is disabled for the mounted tool, while a print is running or
+paused, and during a tool change. Errors from Klipper and from the
+filament service appear next to the button or field that caused them.
+
+The page loads nothing from the internet: Vue 3.5.44, Vuetify 3.13.7,
+the Roboto font and a subset of Material Design Icons ship in `web/vendor/`
+with their licenses.
+
+What `install.sh` changes for the page:
+
+- It writes `/etc/nginx/snippets/hotendchanger.conf`, which serves `web/`
+  from this checkout.
+- It adds `include /etc/nginx/snippets/hotendchanger.conf;` to the
+  `server` block of `/etc/nginx/sites-available/mainsail`, where KIAUH and
+  MainsailOS install the Mainsail site. Pass `--nginx-site FILE` for a
+  different site file. If `nginx -t` rejects the result, both files are
+  restored and the script stops.
+- It adds the sidebar link to `<printer_data>/config/.theme/navi.json`,
+  keeping existing entries.
+
+nginx must be able to read `web/`. If it cannot, the script stops and
+names the file; check the permissions along the path with
+`namei -l ~/kalico-hotendchanger/web/index.html`.
+
+To remove the page:
+
+1. Delete the line `include /etc/nginx/snippets/hotendchanger.conf;` from
+   the Mainsail site file.
+2. Run `sudo rm /etc/nginx/snippets/hotendchanger.conf`, then
+   `sudo nginx -t && sudo systemctl reload nginx`.
+3. Delete the Hotendchanger entry from
+   `~/printer_data/config/.theme/navi.json`.
 
 ## Config reference
 

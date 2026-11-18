@@ -1,0 +1,84 @@
+html, body {
+  background: #121212;
+}
+
+.hc-appbar {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.hc-container {
+  max-width: 1600px;
+}
+
+.hc-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hc-panel-toolbar {
+  background: #272727 !important;
+}
+
+.hc-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.hc-label {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.hc-filament {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+
+.hc-filament-empty {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.hc-swatch {
+  display: inline-block;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.hc-swatch-small {
+  width: 18px;
+  height: 18px;
+}
+
+.hc-swatch-empty {
+  border-style: dashed;
+  background: transparent;
+}
+
+.hc-swatch-cell {
+  width: 36px;
+}
+
+.hc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hc-message {
+  white-space: pre-wrap;
+}
+
+.hc-table {
+  overflow-x: auto;
+}

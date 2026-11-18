@@ -132,7 +132,10 @@ class FilamentService:
             return
         self.tools = tools
         logging.info("Configured tools: %s", tools)
-        await self._publish()
+        try:
+            await self._publish()
+        finally:
+            await self._announce_change()
 
     async def _publish(self):
         if self.tools is None:
@@ -178,6 +181,20 @@ class FilamentService:
         except (RpcError, lib.LibraryError) as e:
             raise lib.LibraryError(
                 "The change was saved, but updating lane_data failed: %s" % (e,)
+            )
+        finally:
+            await self._announce_change()
+
+    async def _announce_change(self):
+        # Moonraker relays an agent event to every other client as
+        # notify_agent_event (moonraker/components/extensions.py:83-101).
+        try:
+            await self.agent.call("connection.send_event", {"event": lib.CHANGE_EVENT})
+        except RpcError as e:
+            logging.error(
+                "The filament change was saved, but open web pages could not"
+                " be told to refresh: %s",
+                e.message,
             )
 
     async def handle_request(self, method, params):
