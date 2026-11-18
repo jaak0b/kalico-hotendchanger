@@ -52,6 +52,7 @@ const App = {
       <v-app-bar density="compact" flat class="hc-appbar">
         <v-icon :icon="icons.tool" class="ml-4 mr-3" />
         <v-app-bar-title>Hotendchanger</v-app-bar-title>
+        <v-btn icon="$close" href="/" variant="text" class="mr-2" title="Back to Mainsail" aria-label="Back to Mainsail" />
       </v-app-bar>
       <v-main>
         <v-container fluid class="hc-container">

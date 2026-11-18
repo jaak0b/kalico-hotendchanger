@@ -72,7 +72,7 @@ export default {
       <v-toolbar density="compact" flat class="hc-panel-toolbar">
         <v-icon :icon="icons.palette" class="ml-4 mr-2" size="small" />
         <v-toolbar-title class="text-subtitle-1">Filament library</v-toolbar-title>
-        <v-btn class="mr-2" variant="text" size="small" :prepend-icon="icons.plus"
+        <v-btn class="mr-2" variant="text" size="small" prepend-icon="$plus"
           :disabled="state.filaments === null" @click="add">Add</v-btn>
       </v-toolbar>
       <v-alert v-if="state.filamentsError" type="error" variant="tonal" density="compact" class="ma-4 hc-message">{{ state.filamentsError }}</v-alert>
