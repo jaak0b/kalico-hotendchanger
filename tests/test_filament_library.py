@@ -15,7 +15,6 @@ from service.filament_library import (
     ToolsUnknownError,
     assign_filament,
     build_lane_data,
-    check_web_url,
     create_filament,
     delete_filament,
     empty_store,
@@ -30,7 +29,6 @@ from service.filament_library import (
     run_console_command,
     set_tool_color,
     update_filament,
-    web_page_announcement,
 )
 
 ASA = {"name": "Elegoo ASA", "material": "ASA", "nozzle_temp": 250}
@@ -552,25 +550,10 @@ class TestConsoleReply:
         _, params = klipper_parse(reply_script("error", "x", None))
         assert sorted(params) == ["KIND", "MSG"]
 
-    def test_announcement_carries_no_request_id_and_survives_parsing(self):
-        command, params = klipper_parse(
-            reply_script("announce", web_page_announcement("http://v2/hotendchanger/"), None)
-        )
-        assert command == "_HOTENDCHANGER_FILAMENT_REPLY"
-        assert sorted(params) == ["KIND", "MSG"]
-        assert params["KIND"] == "announce"
-        assert decode_filament_reply(params["MSG"]) == (
-            'Hotendchanger web page:'
-            ' <a href="http://v2/hotendchanger/">http://v2/hotendchanger/</a>'
-        )
-
-    def test_announcement_with_request_id_is_refused(self):
+    @pytest.mark.parametrize("kind", ["warning", "announce"])
+    def test_unknown_reply_kind_is_refused(self, kind):
         with pytest.raises(ValueError):
-            reply_script("announce", "x", "c0ffee")
-
-    def test_unknown_reply_kind_is_refused(self):
-        with pytest.raises(ValueError):
-            reply_script("warning", "x", "c0ffee")
+            reply_script(kind, "x", "c0ffee")
 
     @pytest.mark.parametrize("encoded", ["not json", "42", '["a"]', '"unterminated'])
     def test_malformed_payload_decodes_to_none(self, encoded):
@@ -751,39 +734,4 @@ class TestApiMethods:
             "Unknown method 'filaments.purge'. Available methods: filaments.list,"
             " filaments.create, filaments.update, filaments.delete, tools.list,"
             " tools.assign, tools.set_color."
-        )
-
-
-class TestWebPageAddress:
-    @pytest.mark.parametrize(
-        "url",
-        ["http://v2/hotendchanger/", "https://192.168.1.20:8080/hotendchanger/"],
-    )
-    def test_http_and_https_addresses_are_accepted_unchanged(self, url):
-        assert check_web_url(url) == url
-
-    @pytest.mark.parametrize(
-        "url", ["v2/hotendchanger/", "ftp://v2/hotendchanger/", "http:///hotendchanger/"]
-    )
-    def test_address_without_http_scheme_or_host_is_refused(self, url):
-        with pytest.raises(LibraryError, match="must start with http:// or https://"):
-            check_web_url(url)
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "http://v2/hotend changer/",
-            'http://v2/"hotendchanger/',
-            "http://v2\\hotendchanger/",
-            "http://v2/<b>/",
-        ],
-    )
-    def test_address_with_characters_that_break_the_unit_or_link_is_refused(self, url):
-        with pytest.raises(LibraryError, match="without spaces, quotes"):
-            check_web_url(url)
-
-    def test_ampersand_in_address_is_escaped_in_the_link(self):
-        assert web_page_announcement("http://v2/hotendchanger/?a=1&b=2") == (
-            'Hotendchanger web page: <a href="http://v2/hotendchanger/?a=1&amp;b=2">'
-            "http://v2/hotendchanger/?a=1&amp;b=2</a>"
         )

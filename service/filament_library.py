@@ -1,9 +1,7 @@
 # Filament library logic for the hotendchanger filament service
-import html
 import json
 import math
 import re
-import urllib.parse
 
 AGENT_NAME = "hotendchanger"
 SERVICE_UNIT = "hotendchanger-filament"
@@ -19,7 +17,6 @@ CONSOLE_REMOTE_METHOD = "hotendchanger_filament_console"
 REPLY_COMMAND = "_HOTENDCHANGER_FILAMENT_REPLY"
 REPLY_INFO = "info"
 REPLY_ERROR = "error"
-REPLY_ANNOUNCE = "announce"
 
 CONSOLE_ADD = "add"
 CONSOLE_ASSIGN = "assign"
@@ -587,46 +584,11 @@ def reply_script(kind, text, request):
     # The JSON payload carries newlines and non-ASCII text through the
     # shlex splitting.
     line = "%s KIND=%s MSG=%s" % (REPLY_COMMAND, kind, _quote_param(json.dumps(text)))
-    if kind == REPLY_ANNOUNCE:
-        if request is not None:
-            raise ValueError("an announcement answers no request, got %r" % (request,))
-        return line
     if kind == REPLY_INFO or kind == REPLY_ERROR:
         if request is None:
             return line
         return "%s REQUEST=%s" % (line, _quote_param(request))
     raise ValueError("unknown reply kind %r" % (kind,))
-
-
-_WEB_URL_FORBIDDEN = "\"\\<>"
-
-
-def check_web_url(url):
-    try:
-        parts = urllib.parse.urlsplit(url)
-    except ValueError as e:
-        raise LibraryError("The web page address %r is not a valid URL: %s." % (url, e))
-    if parts.scheme not in ("http", "https") or not parts.netloc:
-        raise LibraryError(
-            "The web page address %r must start with http:// or https:// and"
-            " name the host, as in http://<printer>/hotendchanger/."
-            % (url,)
-        )
-    for char in url:
-        if char.isspace() or not char.isprintable() or char in _WEB_URL_FORBIDDEN:
-            raise LibraryError(
-                "The web page address %r contains %r. Use an address without"
-                " spaces, quotes, backslashes or angle brackets." % (url, char)
-            )
-    return url
-
-
-def web_page_announcement(url):
-    # Mainsail shows console text as sanitized HTML and links only <a>
-    # elements, never bare URLs (mainsail src/plugins/helpers.ts:110-130,
-    # src/components/console/ConsoleTableEntry.vue:4-9).
-    escaped = html.escape(url, quote=True)
-    return 'Hotendchanger web page: <a href="%s">%s</a>' % (escaped, escaped)
 
 
 def api_error(message):

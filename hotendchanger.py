@@ -60,7 +60,6 @@ FILAMENT_SERVICE_UNIT = "hotendchanger-filament"
 FILAMENT_REPLY_COMMAND = "_HOTENDCHANGER_FILAMENT_REPLY"
 FILAMENT_REPLY_INFO = "info"
 FILAMENT_REPLY_ERROR = "error"
-FILAMENT_REPLY_ANNOUNCE = "announce"
 FILAMENT_CONSOLE_COMMANDS = (
     (
         "HOTENDCHANGER_FILAMENT_ADD",
@@ -813,9 +812,6 @@ class Hotendchanger:
                 "%s received a malformed MSG; the filament service and this"
                 " plugin are from different versions." % (FILAMENT_REPLY_COMMAND,)
             )
-        if kind == FILAMENT_REPLY_ANNOUNCE:
-            self.gcode.respond_info(text)
-            return
         if kind == FILAMENT_REPLY_INFO:
             respond = self.gcode.respond_info
         elif kind == FILAMENT_REPLY_ERROR:

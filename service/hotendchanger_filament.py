@@ -33,8 +33,7 @@ def service_version():
 
 
 class FilamentService:
-    def __init__(self, socket_path, web_url):
-        self.web_url = web_url
+    def __init__(self, socket_path):
         self.store = None
         self.store_error = None
         self.tools = None
@@ -66,7 +65,7 @@ class FilamentService:
             info = await self.agent.call("server.info")
             klippy_state = info.get("klippy_state")
             if klippy_state == "ready":
-                await self._klippy_ready()
+                await self._subscribe()
             else:
                 logging.info(
                     "Klipper state is %r; waiting for it to become ready",
@@ -114,13 +113,6 @@ class FilamentService:
                 self.store_error or "The filament library is not loaded yet."
             )
         return self.store
-
-    async def _klippy_ready(self):
-        if self.web_url is not None:
-            self._schedule_reply(
-                lib.REPLY_ANNOUNCE, lib.web_page_announcement(self.web_url), None
-            )
-        await self._subscribe()
 
     async def _subscribe(self):
         result = await self.agent.call(
@@ -250,7 +242,7 @@ class FilamentService:
     async def handle_notification(self, method, params):
         async with self.lock:
             if method == "notify_klippy_ready":
-                await self._klippy_ready()
+                await self._subscribe()
             elif method == "notify_klippy_disconnected":
                 self.tools = None
             elif method == "notify_klippy_shutdown":
@@ -313,16 +305,9 @@ class FilamentService:
             logging.error("Could not print the console reply %r: %s", text, e)
 
 
-async def run(socket_path, web_url):
-    service = FilamentService(socket_path, web_url)
+async def run(socket_path):
+    service = FilamentService(socket_path)
     await service.agent.run_forever()
-
-
-def web_url_argument(value):
-    try:
-        return lib.check_web_url(value)
-    except lib.LibraryError as e:
-        raise argparse.ArgumentTypeError(str(e))
 
 
 def parse_args(argv):
@@ -335,12 +320,6 @@ def parse_args(argv):
         required=True,
         help="path to Moonraker's unix socket, <printer_data>/comms/moonraker.sock",
     )
-    parser.add_argument(
-        "--web-url",
-        type=web_url_argument,
-        help="address of the hotendchanger web page, printed to the console"
-        " each time Klipper becomes ready; omit it when the page is not installed",
-    )
     return parser.parse_args(argv)
 
 
@@ -349,7 +328,7 @@ def main():
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
-    asyncio.run(run(args.socket, args.web_url))
+    asyncio.run(run(args.socket))
 
 
 if __name__ == "__main__":
