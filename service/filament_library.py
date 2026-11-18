@@ -7,6 +7,7 @@ AGENT_NAME = "hotendchanger"
 SERVICE_UNIT = "hotendchanger-filament"
 STORE_NAMESPACE = "hotendchanger"
 STORE_KEY = "library"
+STORE_VERSION = 2
 LANE_DATA_NAMESPACE = "lane_data"
 STATUS_OBJECT = "hotendchanger"
 STATUS_TOOLS_FIELD = "tools"
@@ -20,8 +21,11 @@ REPLY_ERROR = "error"
 CONSOLE_ADD = "add"
 CONSOLE_ASSIGN = "assign"
 CONSOLE_LIST = "list"
+CONSOLE_COLOR = "color"
 
-FILAMENT_FIELDS = ("name", "material", "color", "nozzle_temp")
+FILAMENT_FIELDS = ("name", "material", "nozzle_temp")
+VERSION_1_FILAMENT_FIELDS = FILAMENT_FIELDS + ("color",)
+ASSIGNMENT_FIELDS = ("filament", "color")
 
 _COLOR_RE = re.compile(r"^#?([0-9A-Fa-f]{6})$")
 
@@ -40,7 +44,7 @@ class ToolsUnknownError(LibraryError):
 
 
 def empty_store():
-    return {"filaments": {}, "assignments": {}}
+    return {"version": STORE_VERSION, "filaments": {}, "assignments": {}}
 
 
 def normalize_text(value, field):
@@ -77,7 +81,6 @@ def normalize_fields(fields):
     return {
         "name": normalize_text(fields["name"], "name"),
         "material": normalize_text(fields["material"], "material"),
-        "color": normalize_color(fields["color"]),
         "nozzle_temp": normalize_nozzle_temp(fields["nozzle_temp"]),
     }
 
@@ -113,10 +116,32 @@ def _require_unique_name(store, name, own_id):
         )
 
 
+def _refuse_filament_color(params, param, assign_with):
+    if isinstance(params, dict) and param in params:
+        raise LibraryError(
+            "%s is not a filament field: the color belongs to the tool that"
+            " holds the filament. Give it when assigning the filament with %s."
+            % (param, assign_with)
+        )
+
+
+def _require_tool_number(tool_number):
+    if isinstance(tool_number, bool) or not isinstance(tool_number, int):
+        raise LibraryError("tool must be a tool number, got %r." % (tool_number,))
+
+
+def _require_configured_tool(tools, tool_number):
+    if tools is None:
+        raise ToolsUnknownError()
+    if tool_number not in tools.values():
+        raise _unknown_tool_error(tools, tool_number)
+
+
 def _copy_store(store):
     return {
+        "version": STORE_VERSION,
         "filaments": {k: dict(v) for k, v in store["filaments"].items()},
-        "assignments": dict(store["assignments"]),
+        "assignments": {k: dict(v) for k, v in store["assignments"].items()},
     }
 
 
@@ -134,44 +159,121 @@ def check_params(params, allowed, required):
         raise LibraryError("Missing parameter(s): %s." % (", ".join(missing),))
 
 
+def _store_location_error(problem):
+    return LibraryError(
+        "The filament library stored in Moonraker database namespace"
+        " '%s', key '%s', %s" % (STORE_NAMESPACE, STORE_KEY, problem)
+    )
+
+
+def _load_filament(store, filament_id, fields, field_names):
+    if not isinstance(fields, dict) or set(fields) != set(field_names):
+        raise LibraryError(
+            "filament %r does not have exactly the fields %s."
+            % (filament_id, ", ".join(field_names))
+        )
+    normalized = normalize_fields(fields)
+    _require_unique_name(store, normalized["name"], filament_id)
+    store["filaments"][filament_id] = normalized
+
+
+def _load_filaments(store, raw_filaments):
+    for filament_id, fields in raw_filaments.items():
+        _load_filament(store, filament_id, fields, FILAMENT_FIELDS)
+
+
+def _require_tool_key(tool):
+    if parse_tool_key(tool) is None:
+        raise LibraryError("assignment key %r is not a tool number." % (tool,))
+
+
+def _load_version_1(store, raw):
+    colors = {}
+    for filament_id, fields in raw["filaments"].items():
+        _load_filament(store, filament_id, fields, VERSION_1_FILAMENT_FIELDS)
+        colors[filament_id] = normalize_color(fields["color"])
+    for tool, filament_id in raw["assignments"].items():
+        _require_tool_key(tool)
+        _require_filament(store, filament_id)
+        store["assignments"][tool] = {
+            "filament": filament_id,
+            "color": colors[filament_id],
+        }
+
+
+def _load_assignments(store, raw_assignments):
+    for tool, assignment in raw_assignments.items():
+        _require_tool_key(tool)
+        if not isinstance(assignment, dict) or set(assignment) != set(
+            ASSIGNMENT_FIELDS
+        ):
+            raise LibraryError(
+                "assignment of tool number %s does not have exactly the"
+                " fields %s." % (tool, ", ".join(ASSIGNMENT_FIELDS))
+            )
+        _require_filament(store, assignment["filament"])
+        store["assignments"][tool] = {
+            "filament": assignment["filament"],
+            "color": normalize_color(assignment["color"]),
+        }
+
+
+def _load_version_2(store, raw):
+    _load_filaments(store, raw["filaments"])
+    _load_assignments(store, raw["assignments"])
+
+
+def _is_current_version(version):
+    return (
+        not isinstance(version, bool)
+        and isinstance(version, int)
+        and version == STORE_VERSION
+    )
+
+
 def load_store(raw):
     if raw is None:
-        return empty_store()
+        return empty_store(), False
+    if not isinstance(raw, dict):
+        raise _store_location_error(
+            "is malformed. Restore it from a database backup or delete that"
+            " key to start empty."
+        )
+    # Version 1 stores predate the version field, give every filament a
+    # color and hold each assignment as a bare filament id.
+    if "version" not in raw:
+        fields = {"filaments", "assignments"}
+        load = _load_version_1
+        migrated = True
+    elif _is_current_version(raw["version"]):
+        fields = {"version", "filaments", "assignments"}
+        load = _load_version_2
+        migrated = False
+    else:
+        raise _store_location_error(
+            "has format version %r, which this filament service does not"
+            " know. Update the filament service to the version that wrote"
+            " it, or restore the library from a database backup."
+            % (raw["version"],)
+        )
     if (
-        not isinstance(raw, dict)
-        or not isinstance(raw.get("filaments"), dict)
-        or not isinstance(raw.get("assignments"), dict)
-        or set(raw) != {"filaments", "assignments"}
+        set(raw) != fields
+        or not isinstance(raw["filaments"], dict)
+        or not isinstance(raw["assignments"], dict)
     ):
-        raise LibraryError(
-            "The filament library stored in Moonraker database namespace"
-            " '%s', key '%s', is malformed. Restore it from a database"
-            " backup or delete that key to start empty."
-            % (STORE_NAMESPACE, STORE_KEY)
+        raise _store_location_error(
+            "is malformed. Restore it from a database backup or delete that"
+            " key to start empty."
         )
     store = empty_store()
     try:
-        for filament_id, fields in raw["filaments"].items():
-            if not isinstance(fields, dict) or set(fields) != set(FILAMENT_FIELDS):
-                raise LibraryError(
-                    "filament %r does not have exactly the fields %s."
-                    % (filament_id, ", ".join(FILAMENT_FIELDS))
-                )
-            normalized = normalize_fields(fields)
-            _require_unique_name(store, normalized["name"], filament_id)
-            store["filaments"][filament_id] = normalized
-        for tool, filament_id in raw["assignments"].items():
-            if parse_tool_key(tool) is None:
-                raise LibraryError("assignment key %r is not a tool number." % (tool,))
-            _require_filament(store, filament_id)
-            store["assignments"][tool] = filament_id
+        load(store, raw)
     except LibraryError as e:
-        raise LibraryError(
-            "The filament library stored in Moonraker database namespace"
-            " '%s', key '%s', is invalid: %s Restore it from a database"
-            " backup or correct the entry." % (STORE_NAMESPACE, STORE_KEY, e)
+        raise _store_location_error(
+            "is invalid: %s Restore it from a database backup or correct the"
+            " entry." % (e,)
         )
-    return store
+    return store, migrated
 
 
 def parse_tool_key(key):
@@ -191,6 +293,7 @@ def list_filaments(store):
 
 
 def create_filament(store, fields, new_id):
+    _refuse_filament_color(fields, "color", "tools.assign")
     check_params(fields, FILAMENT_FIELDS, FILAMENT_FIELDS)
     normalized = normalize_fields(fields)
     _require_unique_name(store, normalized["name"], None)
@@ -220,8 +323,8 @@ def delete_filament(store, filament_id):
     _require_filament(store, filament_id)
     holders = sorted(
         parse_tool_key(tool)
-        for tool, held in store["assignments"].items()
-        if held == filament_id
+        for tool, assignment in store["assignments"].items()
+        if assignment["filament"] == filament_id
     )
     if holders:
         raise LibraryError(
@@ -237,9 +340,10 @@ def delete_filament(store, filament_id):
     return new_store
 
 
-def assign_filament(store, tools, tool_number, filament_id):
-    if isinstance(tool_number, bool) or not isinstance(tool_number, int):
-        raise LibraryError("tool must be a tool number, got %r." % (tool_number,))
+def assign_filament(store, tools, tool_number, filament_id, color=None):
+    _require_tool_number(tool_number)
+    if filament_id is None and color is not None:
+        raise LibraryError("color cannot be given while clearing a tool's filament.")
     key = str(tool_number)
     new_store = _copy_store(store)
     # Clearing needs no tool list, so an assignment left on a tool removed
@@ -248,14 +352,33 @@ def assign_filament(store, tools, tool_number, filament_id):
     if filament_id is None and key in store["assignments"]:
         del new_store["assignments"][key]
         return new_store
-    if tools is None:
-        raise ToolsUnknownError()
-    if tool_number not in tools.values():
-        raise _unknown_tool_error(tools, tool_number)
+    _require_configured_tool(tools, tool_number)
     if filament_id is None:
         return new_store
     _require_filament(store, filament_id)
-    new_store["assignments"][key] = filament_id
+    if color is None:
+        raise LibraryError(
+            "A color is required to assign a filament to a tool. Give the"
+            " color of the filament this tool holds as RRGGBB."
+        )
+    new_store["assignments"][key] = {
+        "filament": filament_id,
+        "color": normalize_color(color),
+    }
+    return new_store
+
+
+def set_tool_color(store, tools, tool_number, color):
+    _require_tool_number(tool_number)
+    _require_configured_tool(tools, tool_number)
+    key = str(tool_number)
+    if key not in store["assignments"]:
+        raise LibraryError(
+            "Tool number %d has no filament assigned, so it has no color to"
+            " set. Assign a filament to it first." % (tool_number,)
+        )
+    new_store = _copy_store(store)
+    new_store["assignments"][key]["color"] = normalize_color(color)
     return new_store
 
 
@@ -292,14 +415,15 @@ def list_tools(store, tools):
         raise ToolsUnknownError()
     result = []
     for name, number in sorted(tools.items(), key=lambda item: item[1]):
-        filament_id = store["assignments"].get(str(number))
+        assignment = store["assignments"].get(str(number))
         result.append(
             {
                 "number": number,
                 "name": name,
                 "filament": None
-                if filament_id is None
-                else filament_record(store, filament_id),
+                if assignment is None
+                else filament_record(store, assignment["filament"]),
+                "color": None if assignment is None else assignment["color"],
             }
         )
     return result
@@ -313,11 +437,11 @@ def build_lane_data(store, tools):
     lanes = {}
     for name, number in tools.items():
         entry = {"lane": str(number)}
-        filament_id = store["assignments"].get(str(number))
-        if filament_id is not None:
-            fields = store["filaments"][filament_id]
+        assignment = store["assignments"].get(str(number))
+        if assignment is not None:
+            fields = store["filaments"][assignment["filament"]]
             entry["material"] = fields["material"]
-            entry["color"] = fields["color"]
+            entry["color"] = assignment["color"]
             entry["nozzle_temp"] = fields["nozzle_temp"]
         lanes[name] = entry
     return lanes
@@ -345,22 +469,29 @@ def _console_temp(text):
 
 
 def format_filament(fields):
-    return "%s: material=%s color=%s nozzle_temp=%s" % (
+    return "%s: material=%s nozzle_temp=%s" % (
         fields["name"],
         fields["material"],
-        fields["color"],
         fields["nozzle_temp"],
     )
 
 
-def format_library(store, tools):
-    rows = []
+def format_tool(tool):
+    filament = tool["filament"]
+    if filament is None:
+        return "%s: filament=none" % (tool["name"],)
+    return "%s: filament=%s color=%s" % (tool["name"], filament["name"], tool["color"])
+
+
+def _format_tool_number(store, tools, tool_number):
     for tool in list_tools(store, tools):
-        filament = tool["filament"]
-        rows.append(
-            "%s filament: %s"
-            % (tool["name"], "none" if filament is None else filament["name"])
-        )
+        if tool["number"] == tool_number:
+            return format_tool(tool)
+    raise _unknown_tool_error(tools, tool_number)
+
+
+def format_library(store, tools):
+    rows = [format_tool(tool) for tool in list_tools(store, tools)]
     for record in list_filaments(store):
         rows.append(format_filament(record))
     if not store["filaments"]:
@@ -368,30 +499,37 @@ def format_library(store, tools):
     return "\n".join(rows)
 
 
+def _console_tool_number(params):
+    tool_text = params["T"]
+    tool_number = parse_tool_key(tool_text.strip())
+    if tool_number is None:
+        raise LibraryError("T must be a tool number, got %r." % (tool_text,))
+    return tool_number
+
+
 def run_console_command(store, tools, command, params, new_id):
     if command == CONSOLE_ADD:
+        _refuse_filament_color(
+            params, "COLOR", "HOTENDCHANGER_FILAMENT_ASSIGN T=<n> NAME=<name> COLOR=RRGGBB"
+        )
         check_params(
             params,
-            ("NAME", "MATERIAL", "COLOR", "NOZZLE_TEMP"),
-            ("NAME", "MATERIAL", "COLOR", "NOZZLE_TEMP"),
+            ("NAME", "MATERIAL", "NOZZLE_TEMP"),
+            ("NAME", "MATERIAL", "NOZZLE_TEMP"),
         )
         new_store, record = create_filament(
             store,
             {
                 "name": params["NAME"],
                 "material": params["MATERIAL"],
-                "color": params["COLOR"],
                 "nozzle_temp": _console_temp(params["NOZZLE_TEMP"]),
             },
             new_id,
         )
         return new_store, "Filament added. " + format_filament(record)
     if command == CONSOLE_ASSIGN:
-        check_params(params, ("T", "NAME", "CLEAR"), ("T",))
-        tool_text = params["T"]
-        tool_number = parse_tool_key(tool_text.strip())
-        if tool_number is None:
-            raise LibraryError("T must be a tool number, got %r." % (tool_text,))
+        check_params(params, ("T", "NAME", "CLEAR", "COLOR"), ("T",))
+        tool_number = _console_tool_number(params)
         clear = params.get("CLEAR")
         if clear is not None and clear != "1":
             raise LibraryError("CLEAR only accepts 1, got %r." % (clear,))
@@ -400,7 +538,9 @@ def run_console_command(store, tools, command, params, new_id):
                 "Give exactly one of NAME=<filament name> or CLEAR=1."
             )
         if clear is not None:
-            new_store = assign_filament(store, tools, tool_number, None)
+            new_store = assign_filament(
+                store, tools, tool_number, None, params.get("COLOR")
+            )
             return new_store, "Tool number %d has no filament assigned." % (
                 tool_number,
             )
@@ -411,10 +551,18 @@ def run_console_command(store, tools, command, params, new_id):
                 " HOTENDCHANGER_FILAMENT_ADD or check the names with"
                 " HOTENDCHANGER_FILAMENT_LIST." % (params["NAME"].strip(),)
             )
-        new_store = assign_filament(store, tools, tool_number, filament_id)
-        return new_store, "Tool number %d holds %s." % (
-            tool_number,
-            format_filament(store["filaments"][filament_id]),
+        new_store = assign_filament(
+            store, tools, tool_number, filament_id, params.get("COLOR")
+        )
+        return new_store, "Filament assigned. " + _format_tool_number(
+            new_store, tools, tool_number
+        )
+    if command == CONSOLE_COLOR:
+        check_params(params, ("T", "COLOR"), ("T", "COLOR"))
+        tool_number = _console_tool_number(params)
+        new_store = set_tool_color(store, tools, tool_number, params["COLOR"])
+        return new_store, "Tool color set. " + _format_tool_number(
+            new_store, tools, tool_number
         )
     if command == CONSOLE_LIST:
         check_params(params, (), ())
@@ -458,7 +606,19 @@ API_METHODS = (
     "filaments.delete",
     "tools.list",
     "tools.assign",
+    "tools.set_color",
 )
+
+
+def _tool_payload(store, tool_number):
+    assignment = store["assignments"].get(str(tool_number))
+    if assignment is None:
+        return {"tool": tool_number, "filament_id": None, "color": None}
+    return {
+        "tool": tool_number,
+        "filament_id": assignment["filament"],
+        "color": assignment["color"],
+    }
 
 
 def run_api_method(store, tools, method, params, new_id):
@@ -471,6 +631,7 @@ def run_api_method(store, tools, method, params, new_id):
         new_store, record = create_filament(store, params, new_id)
         return new_store, {"filament": record}
     if method == "filaments.update":
+        _refuse_filament_color(params, "color", "tools.assign")
         check_params(params, ("id",) + FILAMENT_FIELDS, ("id",))
         changes = {k: v for k, v in params.items() if k != "id"}
         new_store, record = update_filament(store, params["id"], changes)
@@ -482,11 +643,17 @@ def run_api_method(store, tools, method, params, new_id):
         check_params(params, (), ())
         return None, {"tools": list_tools(store, tools)}
     if method == "tools.assign":
-        check_params(params, ("tool", "filament_id"), ("tool", "filament_id"))
-        new_store = assign_filament(
-            store, tools, params["tool"], params["filament_id"]
+        check_params(
+            params, ("tool", "filament_id", "color"), ("tool", "filament_id")
         )
-        return new_store, {"tool": params["tool"], "filament_id": params["filament_id"]}
+        new_store = assign_filament(
+            store, tools, params["tool"], params["filament_id"], params.get("color")
+        )
+        return new_store, _tool_payload(new_store, params["tool"])
+    if method == "tools.set_color":
+        check_params(params, ("tool", "color"), ("tool", "color"))
+        new_store = set_tool_color(store, tools, params["tool"], params["color"])
+        return new_store, _tool_payload(new_store, params["tool"])
     raise LibraryError(
         "Unknown method %r. Available methods: %s."
         % (method, ", ".join(API_METHODS))

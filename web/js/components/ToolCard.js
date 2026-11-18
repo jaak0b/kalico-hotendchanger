@@ -1,5 +1,6 @@
 // One card per configured tool
 import { icons } from "../icons.js";
+import ColorDialog from "./ColorDialog.js";
 import {
   CHANGER_CHANGING,
   changeBlockedByPrint,
@@ -11,6 +12,7 @@ import {
 
 export default {
   name: "ToolCard",
+  components: { ColorDialog },
   inject: ["printer"],
   props: {
     tool: { type: Object, required: true },
@@ -22,6 +24,7 @@ export default {
       gcodeError: null,
       assignBusy: false,
       assignError: null,
+      colorDialog: null,
     };
   },
   computed: {
@@ -51,10 +54,23 @@ export default {
     assignmentsKnown() {
       return this.state.assignments !== null;
     },
-    filament() {
+    assignment() {
       if (!this.assignmentsKnown) return undefined;
-      const entry = this.state.assignments.find((t) => t.number === this.tool.number);
-      return entry === undefined ? undefined : entry.filament;
+      return this.state.assignments.find((t) => t.number === this.tool.number);
+    },
+    filament() {
+      return this.assignment === undefined ? undefined : this.assignment.filament;
+    },
+    toolColor() {
+      return this.assignment === undefined ? null : this.assignment.color;
+    },
+    colorDialogOpen: {
+      get() {
+        return this.colorDialog !== null;
+      },
+      set(open) {
+        if (!open) this.colorDialog = null;
+      },
     },
     filamentItems() {
       if (this.filament === undefined) return [];
@@ -114,12 +130,30 @@ export default {
     change() {
       this.gcode(this.changeAction.kind, this.changeAction.script);
     },
-    async assign(filamentId) {
+    async clear() {
       this.assignBusy = true;
       this.assignError = null;
-      const reply = await this.printer.assignFilament(this.tool.number, filamentId);
+      const reply = await this.printer.assignFilament(this.tool.number, null, null);
       this.assignError = "error" in reply ? reply.error : null;
       this.assignBusy = false;
+    },
+    choose(filamentId) {
+      if (filamentId === null) {
+        this.clear();
+        return;
+      }
+      const chosen = (this.state.filaments ?? []).find((f) => f.id === filamentId);
+      this.assignError = null;
+      this.colorDialog = {
+        title: "Colour of " + (chosen ? chosen.name : filamentId) + " in " + this.tool.name,
+        save: (color) => this.printer.assignFilament(this.tool.number, filamentId, color),
+      };
+    },
+    editColor() {
+      this.colorDialog = {
+        title: "Colour of " + this.filament.name + " in " + this.tool.name,
+        save: (color) => this.printer.setToolColor(this.tool.number, color),
+      };
     },
   },
   template: `
@@ -140,14 +174,16 @@ export default {
           <span>{{ temperatureText }}</span></div>
 
         <div v-if="filament" class="hc-filament mt-3">
-          <span class="hc-swatch" :style="{ backgroundColor: filament.color }"></span>
+          <button type="button" class="hc-swatch hc-swatch-button" :style="{ backgroundColor: toolColor }"
+            :title="'Change the colour (' + toolColor + ')'" @click="editColor"></button>
           <div>
             <div class="text-body-1">{{ filament.name }}</div>
             <div class="text-caption text-medium-emphasis">{{ filament.material }}, {{ filament.nozzle_temp }} °C</div>
           </div>
         </div>
         <div v-else-if="filament === null" class="hc-filament hc-filament-empty mt-3">
-          <span class="hc-swatch hc-swatch-empty"></span>
+          <button type="button" class="hc-swatch hc-swatch-empty hc-swatch-button" disabled
+            title="Assign a filament to set its colour"></button>
           <div class="text-medium-emphasis">No filament loaded</div>
         </div>
         <div v-else class="hc-filament hc-filament-empty mt-3">
@@ -164,7 +200,7 @@ export default {
           :model-value="selectedFilament"
           :disabled="!canEditAssignment"
           :loading="assignBusy"
-          @update:model-value="assign"
+          @update:model-value="choose"
         />
         <v-alert v-if="assignError" type="error" variant="tonal" density="compact" class="mt-2 hc-message">{{ assignError }}</v-alert>
 
@@ -199,6 +235,13 @@ export default {
         <div v-if="changeBlockReason" class="text-caption text-medium-emphasis mt-1">{{ changeAction.label }} unavailable: {{ changeBlockReason }}</div>
         <v-alert v-if="gcodeError" type="error" variant="tonal" density="compact" class="mt-2 hc-message">{{ gcodeError }}</v-alert>
       </v-card-text>
+      <color-dialog
+        v-if="colorDialog"
+        v-model="colorDialogOpen"
+        :title="colorDialog.title"
+        :initial-color="toolColor"
+        :save="colorDialog.save"
+      />
     </v-card>
   `,
 };

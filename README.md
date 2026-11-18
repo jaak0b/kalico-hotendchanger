@@ -180,8 +180,16 @@ is_system_service: False
 An optional service that records which filament each tool holds and
 publishes it to Moonraker's `lane_data` database namespace. OrcaSlicer
 reads that namespace to fill its filament list, so slot N is tool N. The
-library lives in Moonraker's database (namespace `hotendchanger`); each
-filament has a name, material, color and nozzle temperature.
+library lives in Moonraker's database (namespace `hotendchanger`).
+
+A library filament is a product: a name, material and nozzle
+temperature. The color belongs to the tool that holds the filament, so
+one product in two colors is one library entry assigned to two tools.
+
+Libraries saved by earlier versions are converted when the service
+starts: each tool keeps the color of the filament it held, and the color
+is removed from every library filament. A filament no tool held loses
+its color.
 
 **Do not run AFC or Happy Hare on the same printer.** They write
 `lane_data` too, and each overwrites the other's entries.
@@ -218,18 +226,22 @@ managed_services: hotendchanger-filament
 ### Filament console commands
 
 `HOTENDCHANGER_FILAMENT_ADD NAME="<name>" MATERIAL=<material>
-COLOR=<RRGGBB> NOZZLE_TEMP=<temp>`: add a filament to the library. Quote
-names that contain spaces, for example `NAME="Elegoo ASA"`. Names must be
-unique, ignoring case. `COLOR` takes six hex digits, with or without a
-leading `#`.
+NOZZLE_TEMP=<temp>`: add a filament to the library. Quote names that
+contain spaces, for example `NAME="Elegoo ASA"`. Names must be unique,
+ignoring case.
 
-`HOTENDCHANGER_FILAMENT_ASSIGN T=<n> NAME="<name>"`: record that tool
-`T<n>` holds the named filament. `HOTENDCHANGER_FILAMENT_ASSIGN T=<n>
-CLEAR=1` records that the tool holds no filament.
+`HOTENDCHANGER_FILAMENT_ASSIGN T=<n> NAME="<name>" COLOR=<RRGGBB>`:
+record that tool `T<n>` holds the named filament in that color.
+`COLOR` is required and takes six hex digits, with or without a leading
+`#`. `HOTENDCHANGER_FILAMENT_ASSIGN T=<n> CLEAR=1` records that the tool
+holds no filament.
 
-`HOTENDCHANGER_FILAMENT_LIST`: print one row per tool with its filament,
-then one row per library filament with its material, color and nozzle
-temperature.
+`HOTENDCHANGER_FILAMENT_COLOR T=<n> COLOR=<RRGGBB>`: change the color of
+the filament tool `T<n>` holds. A tool without a filament is refused.
+
+`HOTENDCHANGER_FILAMENT_LIST`: print one row per tool with its filament
+and color, then one row per library filament with its material and
+nozzle temperature.
 
 The plugin forwards these commands to the service, which prints the
 result in the console. If the service is not connected, the command fails
@@ -270,15 +282,19 @@ Configured tool numbers: 0, 1, 2."}`.
 | method | arguments | payload |
 | --- | --- | --- |
 | `filaments.list` | none | `{"filaments": [record, ...]}` |
-| `filaments.create` | `name`, `material`, `color`, `nozzle_temp` | `{"filament": record}` |
-| `filaments.update` | `id`, plus any of the four fields | `{"filament": record}` |
+| `filaments.create` | `name`, `material`, `nozzle_temp` | `{"filament": record}` |
+| `filaments.update` | `id`, plus any of the three fields | `{"filament": record}` |
 | `filaments.delete` | `id` | `{"deleted": id}` |
-| `tools.list` | none | `{"tools": [{"number", "name", "filament": record or null}, ...]}` |
-| `tools.assign` | `tool` (number), `filament_id` (id or null) | `{"tool", "filament_id"}` |
+| `tools.list` | none | `{"tools": [{"number", "name", "filament": record or null, "color": color or null}, ...]}` |
+| `tools.assign` | `tool` (number), `filament_id` (id or null), `color` (required with an id, absent with null) | `{"tool", "filament_id", "color"}` |
+| `tools.set_color` | `tool` (number), `color` | `{"tool", "filament_id", "color"}` |
 
-A record is `{"id", "name", "material", "color", "nozzle_temp"}`, with
-`color` stored as `#RRGGBB` in upper case. Deleting a filament that a
-tool still holds is refused. Assigning to a tool number missing from the
+A record is `{"id", "name", "material", "nozzle_temp"}`. A color is
+given as six hex digits, with or without a leading `#`, and stored as
+`#RRGGBB` in upper case. A `color` given to `filaments.create` or
+`filaments.update` is refused. `tools.set_color` on a tool without a
+filament is refused. Deleting a filament that a tool still holds is
+refused. Assigning to a tool number missing from the
 Klipper config is refused; clearing is allowed so an assignment left on a
 removed tool can still be cleared.
 
@@ -302,11 +318,15 @@ The page shows:
 
 - The connection state of Moonraker, Klipper and the filament service.
 - One card per configured tool: a state chip, the nozzle temperature as
-  current / target (to 0.1 °C), the loaded filament, a selector to change
-  it, and the buttons **Heat to filament temperature**, **Off** and
+  current / target (to 0.1 °C), the loaded filament with its color, a
+  selector to change it, and the buttons **Heat to filament temperature**, **Off** and
   **Mount** (`T<n>`). The mounted tool's card shows **Dock**
   (`UNSELECT_TOOL`) instead of **Mount**.
 - The filament library, with add, edit and delete.
+
+Choosing a filament in a tool card's selector opens a color picker; the
+tool changes only when you save a color. Click the color dot on a card to
+change only that tool's color.
 
 | Chip | Meaning |
 | --- | --- |

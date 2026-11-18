@@ -1,6 +1,4 @@
 // Add or edit one library filament
-const HEX_COLOR = /^#?[0-9A-Fa-f]{6}$/;
-
 function temperatureValue(text) {
   const trimmed = String(text).trim();
   const number = Number(trimmed);
@@ -24,16 +22,10 @@ export default {
     title() {
       return this.filament ? "Edit filament" : "Add filament";
     },
-    pickerColor() {
-      const text = this.form.color.trim();
-      if (!HEX_COLOR.test(text)) return null;
-      return (text.startsWith("#") ? text : "#" + text).toUpperCase();
-    },
     complete() {
       return (
         this.form.name.trim() !== "" &&
         this.form.material.trim() !== "" &&
-        this.form.color.trim() !== "" &&
         String(this.form.nozzle_temp).trim() !== ""
       );
     },
@@ -52,14 +44,8 @@ export default {
       return {
         name: f ? f.name : "",
         material: f ? f.material : "",
-        color: f ? f.color : "",
         nozzle_temp: f ? String(f.nozzle_temp) : "",
       };
-    },
-    pick(color) {
-      if (typeof color === "string" && color.toUpperCase() !== this.pickerColor) {
-        this.form.color = color.slice(0, 7).toUpperCase();
-      }
     },
     close() {
       this.$emit("update:modelValue", false);
@@ -70,7 +56,6 @@ export default {
       const fields = {
         name: this.form.name,
         material: this.form.material,
-        color: this.form.color,
         nozzle_temp: temperatureValue(this.form.nozzle_temp),
       };
       const reply = this.filament
@@ -93,21 +78,6 @@ export default {
         <v-card-text>
           <v-text-field v-model="form.name" label="Name" density="compact" variant="outlined" />
           <v-text-field v-model="form.material" label="Material" density="compact" variant="outlined" />
-          <v-color-picker
-            :model-value="pickerColor"
-            @update:model-value="pick"
-            mode="hex"
-            :modes="['hex']"
-            hide-inputs
-            width="100%"
-            class="mb-4"
-          />
-          <v-text-field v-model="form.color" label="Colour (RRGGBB)" density="compact" variant="outlined">
-            <template #prepend-inner>
-              <span class="hc-swatch hc-swatch-small" :class="{ 'hc-swatch-empty': !pickerColor }"
-                :style="pickerColor ? { backgroundColor: pickerColor } : {}"></span>
-            </template>
-          </v-text-field>
           <v-text-field v-model="form.nozzle_temp" label="Nozzle temperature" suffix="°C"
             inputmode="decimal" density="compact" variant="outlined" />
           <v-alert v-if="error" type="error" variant="tonal" density="compact" class="hc-message">{{ error }}</v-alert>

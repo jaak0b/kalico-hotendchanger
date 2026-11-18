@@ -65,8 +65,13 @@ html, body {
   background: transparent;
 }
 
-.hc-swatch-cell {
-  width: 36px;
+.hc-swatch-button {
+  padding: 0;
+  cursor: pointer;
+}
+
+.hc-swatch-button:disabled {
+  cursor: not-allowed;
 }
 
 .hc-actions {

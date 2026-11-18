@@ -80,12 +80,11 @@ export default {
       <v-table v-if="state.filaments !== null" density="compact" class="hc-table">
         <thead>
           <tr>
-            <th></th><th>Name</th><th>Material</th><th>Nozzle</th><th>Used by</th><th></th>
+            <th>Name</th><th>Material</th><th>Nozzle</th><th>Used by</th><th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="f in state.filaments" :key="f.id">
-            <td class="hc-swatch-cell"><span class="hc-swatch hc-swatch-small" :style="{ backgroundColor: f.color }"></span></td>
             <td>{{ f.name }}</td>
             <td>{{ f.material }}</td>
             <td class="text-no-wrap">{{ f.nozzle_temp }} °C</td>
@@ -96,7 +95,7 @@ export default {
             </td>
           </tr>
           <tr v-if="state.filaments.length === 0">
-            <td colspan="6" class="text-medium-emphasis">The library is empty. Add a filament to assign it to a tool.</td>
+            <td colspan="5" class="text-medium-emphasis">The library is empty. Add a filament to assign it to a tool.</td>
           </tr>
         </tbody>
       </v-table>

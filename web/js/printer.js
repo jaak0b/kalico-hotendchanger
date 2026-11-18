@@ -326,7 +326,14 @@ export function createPrinter(url) {
     updateFilament: (id, fields) =>
       changeLibrary("filaments.update", { id, ...fields }),
     deleteFilament: (id) => changeLibrary("filaments.delete", { id }),
-    assignFilament: (tool, filamentId) =>
-      changeLibrary("tools.assign", { tool, filament_id: filamentId }),
+    assignFilament: (tool, filamentId, color) =>
+      changeLibrary(
+        "tools.assign",
+        filamentId === null
+          ? { tool, filament_id: null }
+          : { tool, filament_id: filamentId, color }
+      ),
+    setToolColor: (tool, color) =>
+      changeLibrary("tools.set_color", { tool, color }),
   };
 }

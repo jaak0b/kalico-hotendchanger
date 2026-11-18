@@ -52,13 +52,18 @@ FILAMENT_CONSOLE_COMMANDS = (
     (
         "HOTENDCHANGER_FILAMENT_ADD",
         "add",
-        "Add a filament to the library"
-        " (NAME= MATERIAL= COLOR=RRGGBB NOZZLE_TEMP=)",
+        "Add a filament to the library (NAME= MATERIAL= NOZZLE_TEMP=)",
     ),
     (
         "HOTENDCHANGER_FILAMENT_ASSIGN",
         "assign",
-        "Set the filament a tool holds (T= NAME=), or clear it (T= CLEAR=1)",
+        "Set the filament a tool holds and its color"
+        " (T= NAME= COLOR=RRGGBB), or clear it (T= CLEAR=1)",
+    ),
+    (
+        "HOTENDCHANGER_FILAMENT_COLOR",
+        "color",
+        "Set the color of the filament a tool holds (T= COLOR=RRGGBB)",
     ),
     (
         "HOTENDCHANGER_FILAMENT_LIST",

@@ -13,13 +13,14 @@ sys.path.insert(
 import hotendchanger_filament  # noqa: E402
 from moonraker_agent import RpcError  # noqa: E402
 
-PLA = {"name": "Basic PLA", "material": "PLA", "color": "#FFFFFF", "nozzle_temp": 215}
+PLA = {"name": "Basic PLA", "material": "PLA", "nozzle_temp": 215}
 
 
 class FakeMoonraker:
-    def __init__(self, fail_method=None, failure=None):
+    def __init__(self, fail_method=None, failure=None, database=None):
         self.fail_method = fail_method
         self.failure = failure
+        self.database = database or {}
         self.posted = []
         self.events = []
 
@@ -27,7 +28,9 @@ class FakeMoonraker:
         if method == self.fail_method:
             raise self.failure
         if method == "server.database.list":
-            return {"namespaces": []}
+            return {"namespaces": sorted(self.database)}
+        if method == "server.database.get_item":
+            return {"value": self.database[params["namespace"]]}
         if method == "server.database.post_item":
             self.posted.append(params)
             return {}
@@ -53,8 +56,8 @@ def test_success_reply_wraps_payload_in_result():
     service = service_with(
         FakeMoonraker(), {"filaments": {"pla": dict(PLA)}, "assignments": {}}, {"T0": 0}
     )
-    assert request(service, "tools.assign", {"tool": 0, "filament_id": "pla"}) == {
-        "result": {"tool": 0, "filament_id": "pla"}
+    assert request(service, "tools.assign", {"tool": 0, "filament_id": "pla", "color": "ff0000"}) == {
+        "result": {"tool": 0, "filament_id": "pla", "color": "#FF0000"}
     }
 
 
@@ -70,7 +73,7 @@ def test_unknown_method_replies_with_error_message():
     assert request(service, "filaments.purge", None) == {
         "error": "Unknown method 'filaments.purge'. Available methods:"
         " filaments.list, filaments.create, filaments.update,"
-        " filaments.delete, tools.list, tools.assign."
+        " filaments.delete, tools.list, tools.assign, tools.set_color."
     }
 
 
@@ -114,7 +117,7 @@ def test_saved_change_is_announced_to_open_pages():
     service = service_with(
         moonraker, {"filaments": {"pla": dict(PLA)}, "assignments": {}}, {"T0": 0}
     )
-    request(service, "tools.assign", {"tool": 0, "filament_id": "pla"})
+    request(service, "tools.assign", {"tool": 0, "filament_id": "pla", "color": "ff0000"})
     assert moonraker.events == [{"event": "library_changed"}]
 
 
@@ -167,3 +170,51 @@ def test_unchanged_tools_are_not_announced():
         [{"hotendchanger": {"tools": {"T0": {"number": 0}}}}, 1.0],
     )
     assert moonraker.events == []
+
+
+def test_unversioned_library_is_converted_and_written_back():
+    old = {
+        "filaments": {"pla": {"name": "Basic PLA", "material": "PLA", "color": "#FFFFFF", "nozzle_temp": 215}},
+        "assignments": {"0": "pla"},
+    }
+    moonraker = FakeMoonraker(database={"hotendchanger": {"library": old}})
+    service = service_with(moonraker)
+    asyncio.run(service._load_store())
+    assert moonraker.posted == [
+        {
+            "namespace": "hotendchanger",
+            "key": "library",
+            "value": {
+                "version": 2,
+                "filaments": {
+                    "pla": {"name": "Basic PLA", "material": "PLA", "nozzle_temp": 215}
+                },
+                "assignments": {"0": {"filament": "pla", "color": "#FFFFFF"}},
+            },
+        }
+    ]
+
+
+def test_current_library_is_loaded_without_writing():
+    current = {
+        "version": 2,
+        "filaments": {"pla": {"name": "Basic PLA", "material": "PLA", "nozzle_temp": 215}},
+        "assignments": {"0": {"filament": "pla", "color": "#00FF00"}},
+    }
+    moonraker = FakeMoonraker(database={"hotendchanger": {"library": current}})
+    service = service_with(moonraker)
+    asyncio.run(service._load_store())
+    assert moonraker.posted == []
+
+
+def test_library_of_unknown_version_is_refused_with_its_location():
+    future = {"version": 3, "filaments": {}, "assignments": {}}
+    moonraker = FakeMoonraker(database={"hotendchanger": {"library": future}})
+    service = service_with(moonraker)
+    asyncio.run(service._load_store())
+    assert request(service, "filaments.list", {}) == {
+        "error": "The filament library stored in Moonraker database namespace"
+        " 'hotendchanger', key 'library', has format version 3, which this"
+        " filament service does not know. Update the filament service to the"
+        " version that wrote it, or restore the library from a database backup."
+    }

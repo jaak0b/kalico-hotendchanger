@@ -91,12 +91,20 @@ class FilamentService:
             raw = (await self._read_namespace(lib.STORE_NAMESPACE)).get(
                 lib.STORE_KEY
             )
-            self.store = lib.load_store(raw)
-            self.store_error = None
+            store, migrated = lib.load_store(raw)
         except lib.LibraryError as e:
             self.store = None
             self.store_error = str(e)
             logging.error("%s", e)
+            return
+        if migrated:
+            await self._write_store(store)
+            logging.info(
+                "Converted the filament library to format version %d",
+                lib.STORE_VERSION,
+            )
+        self.store = store
+        self.store_error = None
 
     def _require_store(self):
         if self.store is None:
@@ -166,15 +174,18 @@ class FilamentService:
                 deletes or "nothing",
             )
 
-    async def _save(self, new_store):
+    async def _write_store(self, store):
         await self.agent.call(
             "server.database.post_item",
             {
                 "namespace": lib.STORE_NAMESPACE,
                 "key": lib.STORE_KEY,
-                "value": new_store,
+                "value": store,
             },
         )
+
+    async def _save(self, new_store):
+        await self._write_store(new_store)
         self.store = new_store
         try:
             await self._publish()
