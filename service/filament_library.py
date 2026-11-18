@@ -25,8 +25,6 @@ FILAMENT_FIELDS = ("name", "material", "color", "nozzle_temp")
 
 _COLOR_RE = re.compile(r"^#?([0-9A-Fa-f]{6})$")
 
-ASSIGN_HINT = "HOTENDCHANGER_FILAMENT_ASSIGN T=<n> CLEAR=1"
-
 
 class LibraryError(Exception):
     pass
@@ -227,12 +225,11 @@ def delete_filament(store, filament_id):
     )
     if holders:
         raise LibraryError(
-            "Filament %r is still assigned to tool number(s) %s. Clear those"
-            " assignments first, for example with %s."
+            "Filament %r is still assigned to tool number(s) %s. Clear the"
+            " filament from those tools first."
             % (
                 store["filaments"][filament_id]["name"],
                 ", ".join(str(n) for n in holders),
-                ASSIGN_HINT,
             )
         )
     new_store = _copy_store(store)

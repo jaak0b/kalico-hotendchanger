@@ -5,6 +5,7 @@ import {
   changeBlockedByPrint,
   changerStateColor,
   formatTemperature,
+  pinText,
   toolChip,
 } from "../state.js";
 
@@ -88,6 +89,7 @@ export default {
     },
   },
   methods: {
+    pinText,
     async gcode(kind, script) {
       this.busy = kind;
       this.gcodeError = null;
@@ -130,6 +132,10 @@ export default {
       <v-card-text>
         <div class="hc-row"><span class="hc-label">Changer state</span>
           <span :class="'text-' + stateColor">{{ changer.state }}</span></div>
+        <div class="hc-row"><span class="hc-label">Dock pin</span>
+          <span>{{ pinText(tool.detect) }}</span></div>
+        <div class="hc-row"><span class="hc-label">Toolhead pin</span>
+          <span>{{ pinText(changer.toolhead_detect) }}</span></div>
         <div class="hc-row"><span class="hc-label">Nozzle ({{ tool.extruder }})</span>
           <span>{{ temperatureText }}</span></div>
 

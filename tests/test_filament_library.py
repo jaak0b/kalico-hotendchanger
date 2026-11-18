@@ -149,8 +149,12 @@ class TestUpdateFilament:
 class TestDeleteFilament:
     def test_refuses_while_assigned_and_names_the_tools(self):
         store = library({"2": "asa", "0": "asa", "1": "pla"})
-        with pytest.raises(LibraryError, match=r"assigned to tool number\(s\) 0, 2\."):
+        with pytest.raises(LibraryError) as raised:
             delete_filament(store, "asa")
+        assert str(raised.value) == (
+            "Filament 'Elegoo ASA' is still assigned to tool number(s) 0, 2."
+            " Clear the filament from those tools first."
+        )
 
     def test_removes_unassigned_filament(self):
         store = delete_filament(library({"1": "pla"}), "asa")
