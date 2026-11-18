@@ -2,9 +2,9 @@
 import { icons } from "../icons.js";
 import {
   CHANGER_CHANGING,
+  changeBlockedByPrint,
   changerStateColor,
   formatTemperature,
-  mountBlockedByPrint,
   toolChip,
 } from "../state.js";
 
@@ -74,11 +74,17 @@ export default {
     mounted() {
       return this.changer.active_tool === this.tool.number;
     },
-    mountBlockReason() {
+    changeBlockReason() {
       if (this.changer.state === CHANGER_CHANGING) {
         return "A tool change is in progress.";
       }
-      return mountBlockedByPrint(this.state.printState);
+      return changeBlockedByPrint(this.state.printState);
+    },
+    changeAction() {
+      if (this.mounted) {
+        return { kind: "dock", label: "Dock", script: "UNSELECT_TOOL" };
+      }
+      return { kind: "mount", label: "Mount", script: "T" + this.tool.number };
     },
   },
   methods: {
@@ -103,8 +109,8 @@ export default {
         "SET_HEATER_TEMPERATURE HEATER=" + this.tool.extruder + " TARGET=0"
       );
     },
-    mount() {
-      this.gcode("mount", "T" + this.tool.number);
+    change() {
+      this.gcode(this.changeAction.kind, this.changeAction.script);
     },
     async assign(filamentId) {
       this.assignBusy = true;
@@ -179,12 +185,12 @@ export default {
             variant="flat"
             size="small"
             :prepend-icon="icons.mount"
-            :disabled="mounted || mountBlockReason !== null || busy !== null"
-            :loading="busy === 'mount'"
-            @click="mount"
-          >Mount</v-btn>
+            :disabled="changeBlockReason !== null || busy !== null"
+            :loading="busy === changeAction.kind"
+            @click="change"
+          >{{ changeAction.label }}</v-btn>
         </div>
-        <div v-if="!mounted && mountBlockReason" class="text-caption text-medium-emphasis mt-1">Mount unavailable: {{ mountBlockReason }}</div>
+        <div v-if="changeBlockReason" class="text-caption text-medium-emphasis mt-1">{{ changeAction.label }} unavailable: {{ changeBlockReason }}</div>
         <v-alert v-if="gcodeError" type="error" variant="tonal" density="compact" class="mt-2 hc-message">{{ gcodeError }}</v-alert>
       </v-card-text>
     </v-card>

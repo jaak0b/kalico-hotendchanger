@@ -81,6 +81,10 @@ A `T<n>` command runs, in order:
    target. No target, no wait.
 9. Apply the new tool's gcode offset and run `after_change_gcode`.
 
+`UNSELECT_TOOL` runs steps 1 to 4 with no new tool, then detaches the
+extruder stepper and runs `after_change_gcode`. With detect pins, the
+check after dropoff in step 4 is its verification.
+
 A change that fails partway leaves the plugin in the `error` state with
 no active tool, because a hotend may still be on the carriage without the
 plugin knowing which. Further `T<n>` commands are refused until
@@ -93,6 +97,14 @@ pins, or on a pinless machine through your own `T=<n>` assertion.
 startup. Remove any `[gcode_macro Tn]` of the same name from your config;
 the plugin reports the collision as a config error, because a printer with
 both would have two competing definitions of the same command.
+
+`UNSELECT_TOOL`: dock the mounted tool and leave the toolhead empty. With
+no tool mounted it reports that and does nothing, so a `PRINT_END` macro
+can call it unconditionally. It is allowed whenever a `T<n>` is, during a
+print included.
+
+Remove any `[gcode_macro UNSELECT_TOOL]` from your config; the plugin
+reports the collision as a config error.
 
 `SET_TOOL_OFFSET T=<n> [X=<x>] [Y=<y>] [Z=<z>] [SAVE=1]`: set a tool's
 gcode offset at runtime. Axes left out keep their current value. If the
@@ -292,7 +304,8 @@ The page shows:
 - One card per configured tool: a state chip, the nozzle temperature as
   current / target (to 0.1 °C), the loaded filament, a selector to change
   it, and the buttons **Heat to filament temperature**, **Off** and
-  **Mount** (`T<n>`).
+  **Mount** (`T<n>`). The mounted tool's card shows **Dock**
+  (`UNSELECT_TOOL`) instead of **Mount**.
 - The filament library, with add, edit and delete.
 
 | Chip | Meaning |
@@ -302,8 +315,8 @@ The page shows:
 | Not mounted | The plugin knows the mounted tool, and it is a different one or none. Without a dock pin this does not confirm the hotend is in its dock. |
 | Unknown | The plugin cannot tell which tool is mounted (state `unknown`, `uninitialized`, `changing` or `error`). The card shows the state. |
 
-Mount is disabled for the mounted tool, while a print is running or
-paused, and during a tool change. Errors from Klipper and from the
+Mount and Dock are disabled while a print is running or paused, and
+during a tool change; the card names the reason. Errors from Klipper and from the
 filament service appear next to the button or field that caused them.
 
 The page loads nothing from the internet: Vue 3.5.44, Vuetify 3.13.7,
@@ -357,13 +370,16 @@ dropoff_gcode:
 #before_change_gcode:
 #   A list of G-Code commands run at the start of a tool change, before
 #   any offset or motion change. The template receives "old_tool" (or
-#   None when no tool is mounted) and "new_tool". The default is to run
+#   None when no tool is mounted) and "new_tool" (None for
+#   UNSELECT_TOOL). Read new_tool fields only inside
+#   {% if new_tool %}; otherwise UNSELECT_TOOL can fail with a template
+#   error and leave the plugin in the error state. The default is to run
 #   nothing.
 #after_change_gcode:
 #   A list of G-Code commands run after a tool change completes, once
 #   the new offset is applied and the temperature wait, if any, has
-#   finished. Same template context as before_change_gcode. The default
-#   is to run nothing.
+#   finished; for UNSELECT_TOOL, once the dropoff is done. Same template
+#   context as before_change_gcode. The default is to run nothing.
 #temp_wait_tolerance: 2.0
 #   Temperature window (in degrees Celsius) around the new tool's
 #   target used after pickup. If the new hotend has a nonzero target,

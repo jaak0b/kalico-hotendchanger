@@ -324,6 +324,53 @@ class TestChangeDecision:
         assert "T2" in message
 
 
+class TestUnselectDecision:
+    # requested_tool None is UNSELECT_TOOL.
+    @pytest.mark.parametrize(
+        "state,active,toolhead,expected",
+        [
+            (STATE_READY, 0, None, CHANGE_PROCEED),
+            (STATE_READY, 1, True, CHANGE_PROCEED),
+            (STATE_READY, None, None, CHANGE_NOOP),
+            (STATE_READY, None, False, CHANGE_NOOP),
+            (STATE_UNKNOWN, None, False, CHANGE_NOOP),
+            # Something may be mounted, but no dock is known for it.
+            (STATE_UNKNOWN, None, None, CHANGE_REFUSE),
+            (STATE_UNKNOWN, None, True, CHANGE_REFUSE),
+            (STATE_READY, None, True, CHANGE_REFUSE),
+            (STATE_UNINITIALIZED, None, None, CHANGE_REFUSE),
+            (STATE_CHANGING, 0, None, CHANGE_REFUSE),
+            (STATE_ERROR, None, False, CHANGE_REFUSE),
+        ],
+    )
+    def test_decision_matrix(self, state, active, toolhead, expected):
+        decision, _ = change_decision(state, active, None, toolhead)
+        assert decision == expected
+
+    def test_no_tool_mounted_reports_nothing_to_dock(self):
+        decision, message = change_decision(STATE_READY, None, None, False)
+        assert decision == CHANGE_NOOP
+        assert message == "No tool is mounted, so there is nothing to dock."
+
+    def test_unidentified_hotend_refusal_names_the_assertion_command(self):
+        decision, message = change_decision(STATE_UNKNOWN, None, None, True)
+        assert decision == CHANGE_REFUSE
+        assert "INITIALIZE_HOTENDCHANGER T=<n>" in message
+
+    def test_unknown_mount_refusal_names_the_assertion_command(self):
+        decision, message = change_decision(STATE_UNKNOWN, None, None, None)
+        assert decision == CHANGE_REFUSE
+        assert "INITIALIZE_HOTENDCHANGER T=<n>" in message
+
+    def test_change_in_progress_refuses_with_the_tool_change_message(self):
+        _, message = change_decision(STATE_CHANGING, 0, None, None)
+        assert message == "A tool change is already in progress."
+
+    def test_unlisted_state_raises(self):
+        with pytest.raises(ValueError):
+            change_decision("paused", None, None, None)
+
+
 class TestValidateStepperCarrier:
     def test_exactly_one_stepper_carrier_passes(self):
         assert validate_stepper_carrier([0]) is None

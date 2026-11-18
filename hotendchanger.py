@@ -32,6 +32,8 @@ CHANGE_PROCEED = "proceed"
 CHANGE_NOOP = "noop"
 CHANGE_REFUSE = "refuse"
 
+NOTHING_TO_DOCK = "No tool is mounted, so there is nothing to dock."
+
 PRINT_STATE_PRINTING = "printing"
 PRINT_STATE_PAUSED = "paused"
 PRINT_STATE_STANDBY = "standby"
@@ -367,11 +369,6 @@ def change_decision(state, active_tool, requested_tool, toolhead_present):
     refusal = begin_change_refusal(state)
     if refusal is not None:
         return (CHANGE_REFUSE, refusal)
-    if requested_tool == active_tool:
-        return (
-            CHANGE_NOOP,
-            "%s is already the active tool" % (format_tool(requested_tool),),
-        )
     if active_tool is None and toolhead_present is True:
         return (
             CHANGE_REFUSE,
@@ -380,7 +377,26 @@ def change_decision(state, active_tool, requested_tool, toolhead_present):
             " INITIALIZE_HOTENDCHANGER T=<n> to assert which tool it is."
             % (describe_toolhead_state(True),),
         )
-    return (CHANGE_PROCEED, None)
+    if requested_tool is not None:
+        if requested_tool == active_tool:
+            return (
+                CHANGE_NOOP,
+                "%s is already the active tool" % (format_tool(requested_tool),),
+            )
+        return (CHANGE_PROCEED, None)
+    if active_tool is not None:
+        return (CHANGE_PROCEED, None)
+    if toolhead_present is False:
+        return (CHANGE_NOOP, NOTHING_TO_DOCK)
+    if state == STATE_READY:
+        return (CHANGE_NOOP, NOTHING_TO_DOCK)
+    if state == STATE_UNKNOWN:
+        return (
+            CHANGE_REFUSE,
+            "The mounted tool is not known, so it cannot be docked. Run"
+            " INITIALIZE_HOTENDCHANGER T=<n> to assert which tool is mounted.",
+        )
+    raise ValueError("unhandled hotendchanger state %r" % (state,))
 
 
 def classify_print_state(is_paused, print_stats_state, sd_active):
@@ -609,6 +625,14 @@ class Hotendchanger:
             self._guarded(self.cmd_INITIALIZE_HOTENDCHANGER),
             desc="Re-run tool detection, or assert the mounted tool with T=<n>",
         )
+        self._register_command(
+            config,
+            "UNSELECT_TOOL",
+            self.cmd_UNSELECT_TOOL,
+            "Dock the mounted tool and leave the toolhead empty",
+            "hotendchanger",
+            "the macro",
+        )
         for command, action, desc in FILAMENT_CONSOLE_COMMANDS:
             self.gcode.register_command(
                 command,
@@ -628,17 +652,25 @@ class Hotendchanger:
             )
         self.tools[tool.tool_number] = tool
         command = format_tool(tool.tool_number)
+        self._register_command(
+            config,
+            command,
+            self._make_tool_command(tool.tool_number),
+            "Change to tool %s" % (tool.name,),
+            "hotendchanger_tool %s" % (tool.name,),
+            "either it or this tool section",
+        )
+
+    def _register_command(self, config, command, handler, desc, section, remove):
         try:
             self.gcode.register_command(
-                command,
-                self._guarded(self._make_tool_command(tool.tool_number)),
-                desc="Change to tool %s" % (tool.name,),
+                command, self._guarded(handler), desc=desc
             )
         except self.printer.config_error as e:
             raise config.error(
-                "cannot register gcode command %s for [hotendchanger_tool %s]:"
+                "cannot register gcode command %s for [%s]:"
                 " %s. If a [gcode_macro %s] defines the same command, remove"
-                " either it or this tool section." % (command, tool.name, e, command)
+                " %s." % (command, section, e, command, remove)
             )
 
     def _make_tool_command(self, tool_number):
@@ -1168,6 +1200,10 @@ class Hotendchanger:
             self._pin_states(), self.toolhead_state, expected_tool
         )
 
+    def _record_verified_tool(self, tool_number):
+        if self.has_dock_pins:
+            self.detected_tool = tool_number
+
     def _abandon_change(self):
         self._disengage_tool(self.gcode.run_script_from_command)
         self.state = STATE_ERROR
@@ -1232,12 +1268,16 @@ class Hotendchanger:
         else:
             raise ValueError("unhandled tool change decision %r" % (decision,))
         self._check_homed(gcmd)
-        new_tool = self.tools[tool_number]
+        new_tool = None
+        change_label = "UNSELECT_TOOL"
+        if tool_number is not None:
+            new_tool = self.tools[tool_number]
+            change_label = "Tool change to %s" % (new_tool.name,)
         old_tool = None
         if self.active_tool is not None:
             old_tool = self.tools[self.active_tool]
         old_context = old_tool.template_context() if old_tool else None
-        new_context = new_tool.template_context()
+        new_context = new_tool.template_context() if new_tool else None
         change_context = {
             "old_tool": old_context,
             "new_tool": new_context,
@@ -1260,37 +1300,40 @@ class Hotendchanger:
                         outcome = "verify_failed"
                         self._fail_change(
                             gcmd,
-                            "Tool change to %s failed after dropoff of %s:"
+                            "%s failed after dropoff of %s:"
                             " %s. Check the dock and the coupling, then run"
                             " INITIALIZE_HOTENDCHANGER."
-                            % (new_tool.name, old_tool.name, release_problem),
+                            % (change_label, old_tool.name, release_problem),
                         )
                         return
-            self._render_and_run(
-                self.pickup_template,
-                {"tool": new_context, "params": new_context["params"]},
-            )
-            if self._have_detect_pins():
-                mismatch = self._verify_after_motion(tool_number)
-                if mismatch is not None:
-                    outcome = "verify_failed"
-                    self._fail_change(
-                        gcmd,
-                        "Tool change to %s failed verification: %s. Check"
-                        " the hotend seating on the carriage and the dock"
-                        " switch wiring, then run INITIALIZE_HOTENDCHANGER."
-                        % (new_tool.name, mismatch),
-                    )
-                    return
-                if self.has_dock_pins:
-                    self.detected_tool = tool_number
-            self._activate_extruder(
-                new_tool, self.gcode.run_script_from_command
-            )
-            self._wait_for_temperature(new_tool.extruder_name)
-            self._set_tool_offset(
-                new_tool.offset, self.gcode.run_script_from_command
-            )
+            if new_tool is None:
+                self._record_verified_tool(None)
+                self._disengage_tool(self.gcode.run_script_from_command)
+            else:
+                self._render_and_run(
+                    self.pickup_template,
+                    {"tool": new_context, "params": new_context["params"]},
+                )
+                if self._have_detect_pins():
+                    mismatch = self._verify_after_motion(tool_number)
+                    if mismatch is not None:
+                        outcome = "verify_failed"
+                        self._fail_change(
+                            gcmd,
+                            "Tool change to %s failed verification: %s. Check"
+                            " the hotend seating on the carriage and the dock"
+                            " switch wiring, then run INITIALIZE_HOTENDCHANGER."
+                            % (new_tool.name, mismatch),
+                        )
+                        return
+                    self._record_verified_tool(tool_number)
+                self._activate_extruder(
+                    new_tool, self.gcode.run_script_from_command
+                )
+                self._wait_for_temperature(new_tool.extruder_name)
+                self._set_tool_offset(
+                    new_tool.offset, self.gcode.run_script_from_command
+                )
             self._render_and_run(self.after_template, change_context)
             outcome = "success"
         finally:
@@ -1308,6 +1351,9 @@ class Hotendchanger:
                     "hotendchanger: unhandled tool change outcome %r", outcome
                 )
                 self._abandon_change()
+
+    def cmd_UNSELECT_TOOL(self, gcmd):
+        self._do_tool_change(gcmd, None)
 
     def cmd_SET_TOOL_OFFSET(self, gcmd):
         tool_number = gcmd.get_int("T", minval=0)

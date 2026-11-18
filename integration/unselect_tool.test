@@ -1,0 +1,15 @@
+# A homed printer mounts T1, then UNSELECT_TOOL docks it: the change hook
+# templates see no new tool, T1's gcode offset leaves the gcode origin and
+# the extruder stepper is detached. A second UNSELECT_TOOL finds no tool
+# mounted and does nothing.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+
+G28
+T1
+GET_POSITION
+UNSELECT_TOOL
+GET_POSITION
+HOTENDCHANGER_STATUS
+UNSELECT_TOOL
+M400

@@ -141,6 +141,21 @@ CASES = (
         ),
     },
     {
+        'name': 'UNSELECT_TOOL',
+        'test': 'unselect_tool.test',
+        'require': (
+            'hotendchanger before: old=T1 new=none',
+            'hotendchanger after: old=T1 new=none',
+            'gcode homing: X:0.400000 Y:0.200000 Z:-0.050000',
+            'gcode homing: X:0.000000 Y:0.000000 Z:0.000000',
+            'active_tool: none',
+            'state: ready',
+            'stepper motion_queue: none',
+            'No tool is mounted, so there is nothing to dock.',
+        ),
+        'forbid': ('Unknown command:"UNSELECT_TOOL"',),
+    },
+    {
         'name': 'T1 unhomed',
         'test': 'toolchange_unhomed.test',
         'require': (NOT_HOMED,),

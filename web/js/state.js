@@ -68,7 +68,7 @@ export function changerStateColor(state) {
 // The print_stats state set, identical in Kalico
 // (klippy/extras/print_stats.py:46-111) and stock Klipper
 // (klippy/extras/print_stats.py:44-92).
-export function mountBlockedByPrint(printState) {
+export function changeBlockedByPrint(printState) {
   if (printState === "printing") return "A print is running.";
   if (printState === "paused") return "A print is paused.";
   if (printState === "standby") return null;
