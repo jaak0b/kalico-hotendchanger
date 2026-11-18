@@ -357,9 +357,12 @@ The page shows:
   shows **Dock** (`UNSELECT_TOOL`) instead of **Mount**. Each button has a
   tooltip. The info button at the end of the button row opens the raw
   values: Changer state, Dock pin, Toolhead pin and the nozzle heater
-  name. The grid shows 1 card per row on phones, 2 on tablets, 4 on
-  desktops and 6 on very wide screens.
-- The filament library, with add, edit and delete.
+  name. All cards have the same width, the narrowest that keeps the
+  buttons on one row. Cards start at the left edge, as many per row as
+  the window fits, and continue on the next row. On a screen narrower
+  than one card, the card takes the full width.
+- The filament library, with add, edit and delete, across the full
+  window width.
 
 Choosing a filament in a tool card's selector opens a color picker; the
 tool changes only when you save a color. Click the color dot on a card to

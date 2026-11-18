@@ -6,8 +6,17 @@ html, body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.hc-container {
-  max-width: 1600px;
+:root {
+  /* Narrowest tool card that keeps Heat, Off, Mount and the details chip on one row. */
+  --hc-card-width: 266px;
+}
+
+.hc-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, min(100%, var(--hc-card-width)));
+  justify-content: start;
+  gap: 24px;
+  margin-bottom: 24px;
 }
 
 .hc-status {

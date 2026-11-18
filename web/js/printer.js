@@ -229,8 +229,7 @@ export function createPrinter(url) {
         console.error("Loading the Klipper state failed:", errorText(error))
       );
     } else if (method === "notify_klippy_shutdown") {
-      refreshServerInfo().catch(reportUnexpected);
-      loadLibrary().catch(reportUnexpected);
+      refreshServerInfo().then(loadLibrary).catch(reportUnexpected);
     } else if (method === "notify_klippy_disconnected") {
       state.klippy = { state: "disconnected", message: null };
       clearKlipperData();
@@ -283,9 +282,12 @@ export function createPrinter(url) {
       state.assignmentsError = null;
       return;
     }
+    // The service knows the configured tools only while Klipper is ready
+    // (service/filament_library.py list_tools raises ToolsUnknownError).
+    const toolsKnown = state.klippy.state === "ready";
     const [filaments, tools] = await Promise.all([
       agentRequest("filaments.list", {}),
-      agentRequest("tools.list", {}),
+      toolsKnown ? agentRequest("tools.list", {}) : null,
     ]);
     if ("error" in filaments) {
       state.filaments = null;
@@ -294,7 +296,10 @@ export function createPrinter(url) {
       state.filaments = filaments.result.filaments;
       state.filamentsError = null;
     }
-    if ("error" in tools) {
+    if (tools === null) {
+      state.assignments = null;
+      state.assignmentsError = null;
+    } else if ("error" in tools) {
       state.assignments = null;
       state.assignmentsError = tools.error;
     } else {

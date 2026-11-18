@@ -2,7 +2,7 @@
 import { aliases, icons } from "./icons.js";
 import { websocketUrl } from "./moonraker.js";
 import { SERVICE_UNIT, createPrinter } from "./printer.js";
-import { klippyStateColor, sortedTools } from "./state.js";
+import { klippyMessageParts, klippyStateColor, sortedTools } from "./state.js";
 import FilamentLibrary from "./components/FilamentLibrary.js";
 import ToolCard from "./components/ToolCard.js";
 
@@ -54,6 +54,9 @@ const App = {
       const s = this.state.klippy.state;
       return { text: s ?? "unknown", color: klippyStateColor(s) };
     },
+    klippyMessage() {
+      return klippyMessageParts(this.state.klippy.message || "Klipper is not ready.");
+    },
     serviceChip() {
       const c = this.state.service.connected;
       if (c === true) return { text: "connected", color: "success" };
@@ -72,7 +75,7 @@ const App = {
         <v-btn icon="$close" :href="mainsailUrl" variant="text" class="mr-2" title="Back to Mainsail" aria-label="Back to Mainsail" />
       </v-app-bar>
       <v-main>
-        <v-container fluid class="hc-container">
+        <v-container fluid>
           <div class="hc-status mb-4">
             <v-chip size="small" variant="tonal" :color="socketChip.color">Moonraker: {{ socketChip.text }}</v-chip>
             <v-chip size="small" variant="tonal" :color="klippyChip.color">Klipper: {{ klippyChip.text }}</v-chip>
@@ -88,7 +91,10 @@ const App = {
           </v-alert>
 
           <v-alert v-if="state.socket === 'connected' && state.klippy.state !== null && state.klippy.state !== 'ready'"
-            type="warning" variant="tonal" class="mb-4 hc-message" :title="'Klipper: ' + state.klippy.state">{{ state.klippy.message || 'Klipper is not ready.' }}</v-alert>
+            type="warning" variant="tonal" class="mb-4" :title="'Klipper: ' + state.klippy.state">
+            <div class="text-subtitle-2">{{ klippyMessage.headline }}</div>
+            <div v-if="klippyMessage.detail">{{ klippyMessage.detail }}</div>
+          </v-alert>
           <v-alert v-if="state.changerMissing" type="error" variant="tonal" class="mb-4" title="No hotendchanger section">
             Add the [hotendchanger] section to your Klipper config, then restart Klipper.
           </v-alert>
@@ -96,17 +102,11 @@ const App = {
             Check the service with <code>systemctl status {{ serviceUnit }}</code>. The filament library and tool assignments are unavailable until it connects.
           </v-alert>
 
-          <v-row v-if="tools.length">
-            <v-col v-for="tool in tools" :key="tool.name" cols="12" sm="6" md="3" xl="2">
-              <tool-card :tool="tool" />
-            </v-col>
-          </v-row>
+          <div v-if="tools.length" class="hc-tool-grid">
+            <tool-card v-for="tool in tools" :key="tool.name" :tool="tool" />
+          </div>
 
-          <v-row>
-            <v-col cols="12">
-              <filament-library v-if="state.service.connected === true" />
-            </v-col>
-          </v-row>
+          <filament-library v-if="state.service.connected === true" />
         </v-container>
       </v-main>
     </v-app>

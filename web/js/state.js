@@ -141,6 +141,15 @@ export function klippyStateColor(state) {
   return "error";
 }
 
+// Klipper's state messages carry a leading newline and hard line breaks for
+// a terminal (Kalico klippy/printer.py:43-80 message_startup,
+// message_shutdown).
+export function klippyMessageParts(message) {
+  const lines = message.split(/\r?\n/).filter((line) => line.trim() !== "");
+  const words = lines.slice(1).join(" ").split(/\s+/).filter((word) => word !== "");
+  return { headline: (lines[0] ?? "").trim(), detail: words.join(" ") };
+}
+
 function temperatureValue(value) {
   return typeof value === "number" ? value.toFixed(1) : "n/a";
 }
