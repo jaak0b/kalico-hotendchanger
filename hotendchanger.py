@@ -1138,17 +1138,17 @@ class Hotendchanger:
         )
 
     def _host_stepper_attribute(self, tool):
-        # Kalico's process_move takes the per-move pressure advance value
-        # from the ACTIVE section's extruder_stepper (Kalico
-        # klippy/kinematics/extruder.py:340-345) and the step kernel zeroes
-        # pressure advance when that value is 0 (Kalico
-        # klippy/chelper/kin_extruder.c:66-73), so a heater-only active
-        # section would print with no pressure advance at all. Hosting the
-        # carrier's ExtruderStepper object on the active heater-only section
-        # feeds the carrier's (per-tool) value into the move. Stock reads
-        # only a geometric flag from the move (stock extruder.py:246-248)
-        # and the carrier stepper's own value in the kernel (stock
-        # chelper/kin_extruder.c:68-77), so the hosting is inert there.
+        # Kalico before 4b15247 reads the ACTIVE section's extruder_stepper
+        # pressure advance in process_move (Kalico 991e182
+        # klippy/kinematics/extruder.py:367-378), and the step kernel zeroes
+        # pressure advance when that value is 0, so a heater-only active
+        # section would print with no pressure advance. Hosting the
+        # carrier's ExtruderStepper on the active heater-only section feeds
+        # the carrier's per-tool value into the move. Kalico from 4b15247 and
+        # stock Klipper set a geometric flag in process_move (stock
+        # klippy/kinematics/extruder.py:246-253) and the kernel takes the
+        # value from each stepper's own pa_list (klippy/chelper/
+        # kin_extruder.c:68-77), so the hosting is inert there.
         if self.carrier_stepper is None:
             return
         previous = self.pa_host
