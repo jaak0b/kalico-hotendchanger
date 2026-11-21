@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SUPPORT_WINDOW_DAYS: 183
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -48,15 +51,40 @@ jobs:
           - name: Kalico main
             repository: KalicoCrew/kalico
             ref: main
+            pinned: false
+          - name: Kalico 2026-11-08
+            repository: KalicoCrew/kalico
+            ref: 991e1823e983a31d26b9264d2b6305fd64e3a09a
+            pinned: true
+            date: "2026-11-08"
+            reason: last build with the old pressure advance read in process_move
+            newest_release: false
           - name: Kalico 2026-07-28
             repository: KalicoCrew/kalico
             ref: 5fdf0dd3ee8adba46a2aebea3a87bf507c8faf1d
+            pinned: true
+            date: "2026-07-28"
+            reason: oldest Kalico build inside the support window
+            newest_release: false
           - name: Klipper master
             repository: Klipper3d/klipper
             ref: master
+            pinned: false
           - name: Klipper v0.13.0
             repository: Klipper3d/klipper
             ref: v0.13.0
+            pinned: true
+            date: "2025-04-12"
+            reason: previous Klipper release
+            superseded: "2026-11-20"
+            newest_release: false
+          - name: Klipper v0.14.0
+            repository: Klipper3d/klipper
+            ref: v0.14.0
+            pinned: true
+            date: "2026-11-20"
+            reason: newest Klipper release
+            newest_release: true
     steps:
       - name: Check out the plugin
         uses: actions/checkout@v4
@@ -83,6 +111,23 @@ jobs:
           gcc --version
           make --version
           git -C firmware log -1 --format='${{ matrix.firmware.name }} %H %cI %s'
+
+      # A pinned leg past the window is a reminder to re-pin or retire it,
+      # never a failure: only the newest official Klipper release is exempt.
+      # A superseded release ages from the date its successor shipped.
+      - name: Warn when a pinned leg is older than the support window
+        if: matrix.firmware.pinned && !matrix.firmware.newest_release
+        env:
+          LEG_NAME: ${{ matrix.firmware.name }}
+          LEG_DATE: ${{ matrix.firmware.date }}
+          LEG_SUPERSEDED: ${{ matrix.firmware.superseded }}
+          LEG_REASON: ${{ matrix.firmware.reason }}
+        run: |
+          age_start="${LEG_SUPERSEDED:-$LEG_DATE}"
+          age_days=$(( ( $(date -u +%s) - $(date -u -d "$age_start" +%s) ) / 86400 ))
+          if [ "$age_days" -gt "$SUPPORT_WINDOW_DAYS" ]; then
+            echo "::warning title=Pinned firmware outside the support window::$LEG_NAME ($LEG_DATE, $LEG_REASON) is $age_days days past $age_start, the window is $SUPPORT_WINDOW_DAYS days"
+          fi
 
       - name: Run the integration harness
         run: python integration_test.py firmware
