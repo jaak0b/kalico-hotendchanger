@@ -390,13 +390,15 @@ def check_module_lists():
 
 def check_pa_source_shape(checkout):
     """The plugin's per-tool pressure advance depends on one of two known
-    process_move shapes; any other shape fails by name instead of silently
+    extruder move shapes; any other shape fails by name instead of silently
     losing pressure advance."""
     source_path = checkout / 'klippy' / 'kinematics' / 'extruder.py'
     source = source_path.read_text(errors='replace')
     match = re.search(
-        r'def process_move\b.*?(?=\n    def |\nclass |\Z)', source, re.DOTALL)
+        r'def (process_move|move)\b.*?(?=\n    def |\nclass |\Z)', source,
+        re.DOTALL)
     body = match.group(0) if match else ''
+    method = match.group(1) if match else 'process_move or move'
     reads_stepper_value = re.search(
         r'=\s*self\.extruder_stepper\.pressure_advance\b', body) is not None
     geometric_flag = ('can_pressure_advance' in body
@@ -405,12 +407,12 @@ def check_pa_source_shape(checkout):
         return
     if not geometric_flag:
         raise Failure(
-            "%s: process_move matches neither known shape (reading the "
+            "%s: %s matches neither known shape (reading the "
             "active section's extruder_stepper pressure advance, or setting "
             "a geometric can_pressure_advance flag). The plugin's per-tool "
             "pressure advance hosts the carrier stepper on the active "
             "section; re-verify the hosting against this firmware before "
-            "trusting pressure advance." % (source_path,))
+            "trusting pressure advance." % (source_path, method))
     kernel_path = checkout / 'klippy' / 'chelper' / 'kin_extruder.c'
     kernel = kernel_path.read_text(errors='replace')
     if ('list_last_entry(pa_list' not in kernel
@@ -418,9 +420,9 @@ def check_pa_source_shape(checkout):
         raise Failure(
             "%s: the step kernel no longer takes the pressure advance value "
             "from each stepper's pa_list. With a geometric flag in "
-            "process_move, per-tool pressure advance depends on that read; "
+            "%s, per-tool pressure advance depends on that read; "
             "re-verify SET_PRESSURE_ADVANCE on the carrier stepper against "
-            "this firmware." % (kernel_path,))
+            "this firmware." % (kernel_path, method))
 
 
 def check_checkout(raw):
