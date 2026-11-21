@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_DIR))
+from installer import setup_config  # noqa: E402
 # Both modules must be staged together: Kalico resolves [hotendchanger_tool]
 # sections to the module of that name, so staging only hotendchanger.py
 # leaves the tool sections unclaimed and config load fails.
@@ -102,6 +104,69 @@ NOT_HOMED = 'Home all axes with G28 before a tool change'
 # cases list the traceback marker under 'allow' instead of tripping
 # FORBIDDEN_ALWAYS.
 CONFIG_ERROR_TRACEBACK = ('Traceback (most recent call last)',)
+
+# Test values for the options the first install setup leaves for the user,
+# keyed by option name; each takes the section name and returns the value.
+# Pins and temperatures are those of the simulated machine in machine.cfg;
+# the PID values are Klipper's example config ones. Detect pins are free
+# pins of the simulated MCU, which reports no button state changes, so the
+# cases with sensors only prove the options load.
+def _tool_number(section):
+    return int(section.split()[1][1:])
+
+
+def _extruder_number(section):
+    return int(section[len('extruder'):])
+
+
+FILL_VALUES = {
+    'params_dock_x': lambda s: '%.1f' % (10.0 + 80.0 * _tool_number(s),),
+    'params_dock_y': lambda s: '350.0',
+    'params_dock_z': lambda s: '20.0',
+    'detect_pin': lambda s: 'gpio%d' % (30 + _tool_number(s),),
+    'toolhead_detect_pin': lambda s: 'gpio40',
+    'heater_pin': lambda s: 'gpio%d' % (18 + _extruder_number(s),),
+    'sensor_type': lambda s: 'Generic 3950',
+    'sensor_pin': lambda s: 'analog%d' % (_extruder_number(s),),
+    'pid_Kp': lambda s: '22.2',
+    'pid_Ki': lambda s: '1.08',
+    'pid_Kd': lambda s: '114',
+    'min_temp': lambda s: '0',
+    'max_temp': lambda s: '300',
+    'nozzle_diameter': lambda s: '0.400',
+    'filament_diameter': lambda s: '1.750',
+}
+
+FILL_LINE = re.compile(r'#(?P<option>[A-Za-z_]+):$')
+SECTION_LINE = re.compile(r'\[(?P<name>[^\]]+)\]$')
+
+
+def fill_generated(text):
+    section = None
+    out = []
+    for line in text.split('\n'):
+        header = SECTION_LINE.match(line)
+        if header is not None:
+            section = header.group('name')
+        fill = FILL_LINE.match(line)
+        if fill is not None:
+            option = fill.group('option')
+            if option not in FILL_VALUES:
+                raise Failure(
+                    "the generated config asks for %s in [%s], which "
+                    "FILL_VALUES has no test value for; add one."
+                    % (option, section))
+            line = '%s: %s' % (option, FILL_VALUES[option](section))
+        out.append(line)
+    return '\n'.join(out)
+
+
+# Klipper builds every extruder section's heater before anything else in
+# it, and the heater reads sensor_type first (Kalico
+# klippy/extras/heaters.py:1355-1361 and :1397-1400), so the first new
+# section's sensor_type is the deterministic first missing option.
+GENERATED_UNFILLED_REQUIRE = (
+    "Option 'sensor_type' in section 'extruder1' must be specified",)
 
 CASES = (
     {
@@ -214,6 +279,84 @@ CASES = (
         'require': ("both name extruder section 'extruder'",),
         'forbid': (),
         'allow': CONFIG_ERROR_TRACEBACK,
+    },
+    {
+        'name': 'setup output, 1 tool, unfilled',
+        'test': 'generated_one_tool.test',
+        'generate': {
+            'dir': 'generated_one_tool',
+            'tools': 1,
+            'dock_sensors': False,
+            'toolhead_sensor': False,
+            'fill': False,
+        },
+        'require': (CONNECTED, "Unable to parse move 'G1 X Y F6000'"),
+        'forbid': ('Unknown command:"T0"',),
+    },
+    {
+        'name': 'setup output, 3 tools, sensors, unfilled',
+        'test': 'generated_unfilled.test',
+        'generate': {
+            'dir': 'generated_unfilled_sensors',
+            'tools': 3,
+            'dock_sensors': True,
+            'toolhead_sensor': True,
+            'fill': False,
+        },
+        'require': GENERATED_UNFILLED_REQUIRE,
+        'forbid': (),
+        'allow': CONFIG_ERROR_TRACEBACK,
+    },
+    {
+        'name': 'setup output, 2 tools, no sensors, unfilled',
+        'test': 'generated_unfilled.test',
+        'generate': {
+            'dir': 'generated_unfilled_plain',
+            'tools': 2,
+            'dock_sensors': False,
+            'toolhead_sensor': False,
+            'fill': False,
+        },
+        'require': GENERATED_UNFILLED_REQUIRE,
+        'forbid': (),
+        'allow': CONFIG_ERROR_TRACEBACK,
+    },
+    {
+        'name': 'setup output, 3 tools, filled',
+        'test': 'generated_filled.test',
+        'generate': {
+            'dir': 'generated_filled',
+            'tools': 3,
+            'dock_sensors': False,
+            'toolhead_sensor': False,
+            'fill': True,
+        },
+        'require': (
+            'Activating extruder extruder1',
+            'Activating extruder extruder2',
+            'active_tool: T1',
+            'active_tool: T2',
+            'active_tool: none',
+            'state: ready',
+        ),
+        'forbid': (
+            'Unknown command:"T1"',
+            'Unknown command:"T2"',
+            'Unable to parse move',
+        ),
+    },
+    {
+        'name': 'setup output, 3 tools, sensors, filled',
+        'test': 'generated_filled_sensors.test',
+        'generate': {
+            'dir': 'generated_filled_sensors',
+            'tools': 3,
+            'dock_sensors': True,
+            'toolhead_sensor': True,
+            'fill': True,
+        },
+        'require': (CONNECTED, 'T2 detect_pin:', 'toolhead_detect_pin:'),
+        'forbid': ('Unknown command:"HOTENDCHANGER_STATUS"',),
     },
 )
 
@@ -467,15 +610,51 @@ def case_output(case_dir, harness_output):
     return output + log
 
 
+def staged_test(staged, case):
+    if 'generate' in case:
+        return staged / case['generate']['dir'] / case['test']
+    return staged / case['test']
+
+
+def stage_generated(case_dir, spec):
+    """Write the first install setup's output into a config directory the
+    way install.sh does: scan printer.cfg for existing extruder sections,
+    write hotendchanger.cfg, then add the include to printer.cfg."""
+    case_dir.mkdir()
+    printer_cfg = case_dir / setup_config.MAIN_CONFIG_NAME
+    printer_cfg.write_text('[include ../machine.cfg]\n')
+    try:
+        state = setup_config.ConfigState(str(case_dir), None)
+        existing = state.existing_extruders()
+        chosen = [setup_config.MAIN_EXTRUDER]
+        for _ in range(1, spec['tools']):
+            chosen.append(setup_config.suggest_new_extruder(existing, chosen))
+        text = setup_config.render_config(setup_config.build_sections(
+            chosen, spec['dock_sensors'], spec['toolhead_sensor'], existing))
+        included = setup_config.add_include(printer_cfg.read_text())
+    except setup_config.SetupError as e:
+        raise Failure("the first install setup failed for %s: %s"
+                      % (case_dir.name, e))
+    if included is None:
+        raise Failure("%s already included hotendchanger.cfg before the "
+                      "setup ran" % (printer_cfg,))
+    if spec['fill']:
+        text = fill_generated(text)
+    (case_dir / setup_config.CONFIG_FILE_NAME).write_text(text)
+    printer_cfg.write_text(included)
+
+
 def stage_cases(scratch):
     """Copy the cases where they can sit next to the printer.cfg copy."""
     staged = scratch / 'cases'
     staged.mkdir()
-    for case in CASES:
-        shutil.copyfile(str(CASE_DIR / case['test']),
-                        str(staged / case['test']))
     for config in sorted(CASE_DIR.glob('*.cfg')):
         shutil.copyfile(str(config), str(staged / config.name))
+    for case in CASES:
+        if 'generate' in case:
+            stage_generated(staged / case['generate']['dir'], case['generate'])
+        shutil.copyfile(str(CASE_DIR / case['test']),
+                        str(staged_test(staged, case)))
     return staged
 
 
@@ -484,7 +663,7 @@ def run_case(case, checkout, staged, dictdir, workdir, env, layout):
     output)."""
     # klippy appends to its log file and the name above is the same for every
     # case, so each case runs in a directory of its own.
-    case_dir = workdir / case['test']
+    case_dir = workdir / staged_test(staged, case).relative_to(staged)
     case_dir.mkdir(parents=True, exist_ok=True)
     if LAYOUTS[layout]['link_klippy_tree']:
         tree_link = case_dir / 'klippy'
@@ -496,7 +675,7 @@ def run_case(case, checkout, staged, dictdir, workdir, env, layout):
                          % (case_dir, e)], '')
     command = [
         sys.executable, str(checkout / 'scripts' / 'test_klippy.py'),
-        '-k', '-d', str(dictdir), '-t', '.', str(staged / case['test']),
+        '-k', '-d', str(dictdir), '-t', '.', str(staged_test(staged, case)),
     ]
     try:
         proc = subprocess.run(

@@ -1,0 +1,7 @@
+# The setup's output with new extruder sections, left unfilled: config load
+# must fail naming the first option of the first new section.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+M115

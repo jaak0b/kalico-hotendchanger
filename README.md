@@ -216,6 +216,37 @@ primary_branch: main
 managed_services: klipper
 ```
 
+### First install setup
+
+When no hotendchanger configuration exists yet, `install.sh` asks a few
+questions and writes a starter `hotendchanger.cfg` into the config
+directory:
+
+- the number of tools;
+- the extruder section of each tool after T0 (T0 always uses
+  `[extruder]`): one already in your config, or a new heater-only
+  `[extruderN]`;
+- whether the docks have presence sensors, and whether the toolhead has
+  one.
+
+The file holds `[hotendchanger]` with the starter templates from the
+[example config](#example-config), one `[hotendchanger_tool T<n>]` per
+tool, and a section skeleton for each new extruder section. `install.sh`
+adds `[include hotendchanger.cfg]` to `printer.cfg`, keeping a dated
+backup of it.
+
+**Fill in the pins, dock positions and hotend values yourself.** The setup
+leaves them commented out and prints which options are missing in which
+section. Klipper reports a config error until every new extruder section
+is filled in.
+
+The setup is skipped when `hotendchanger.cfg` exists, or when any
+`[hotendchanger]` or `[hotendchanger_tool]` section is found in
+`printer.cfg`, its included files, or the config Klipper has loaded. It is
+also skipped when the script runs non-interactively. Pass `--setup` to
+replace an existing `hotendchanger.cfg`: it asks first and keeps a dated
+backup. It refuses while hotendchanger sections exist in any other file.
+
 ## Filament service
 
 An optional service that records which filament each tool holds and
@@ -612,8 +643,10 @@ control: pid
 #pid_Kp:
 #pid_Ki:
 #pid_Kd:
-min_temp: 0
-max_temp: 300
+#min_temp:
+#max_temp:
+#nozzle_diameter:
+#filament_diameter:
 
 [heater_fan hotend1_fan]
 #pin:

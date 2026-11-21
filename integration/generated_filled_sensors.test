@@ -1,0 +1,6 @@
+# The setup's output with dock and toolhead sensors, every fill-in line given
+# a value: the detect pin options are accepted and the printer connects.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+
+HOTENDCHANGER_STATUS

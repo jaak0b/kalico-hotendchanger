@@ -1,0 +1,13 @@
+# The setup's output for three tools with every fill-in line given a value:
+# the printer homes, changes through the new tools and unselects.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+
+G28
+T1
+HOTENDCHANGER_STATUS
+T2
+HOTENDCHANGER_STATUS
+UNSELECT_TOOL
+HOTENDCHANGER_STATUS
+M400

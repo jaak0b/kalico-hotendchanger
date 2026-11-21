@@ -31,9 +31,158 @@ NAVI_TITLE=Hotendchanger
 # mdiPrinter3dNozzle from @mdi/js 7.4.47; Mainsail's sidebar renders an SVG
 # path string as the icon (mainsail src/components/ui/SidebarItem.vue:14).
 NAVI_ICON='M7,2H17V8H19V13H16.5L13,17H11L7.5,13H5V8H7V2M10,22H2V20H10A1,1 0 0,0 11,19V18H13V19A3,3 0 0,1 10,22Z'
+SETUP_HELPER="$SCRIPT_DIR/installer/setup_config.py"
+# Must equal the exit codes installer/setup_config.py defines.
+SETUP_NONE=0
+SETUP_OWN_FILE=3
+SETUP_ELSEWHERE=4
+INCLUDE_WRITTEN=0
+INCLUDE_PRESENT=3
+
+# NO_COLOR convention (no-color.org): any non-empty value disables color.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    ESC=$(printf '')
+    C_RESET="$ESC[0m"
+    C_TITLE="$ESC[1;36m"
+    C_KEY="$ESC[1;36m"
+    C_OK="$ESC[0;32m"
+    C_WARN="$ESC[0;33m"
+    C_ERR="$ESC[0;31m"
+else
+    C_RESET= C_TITLE= C_KEY= C_OK= C_WARN= C_ERR=
+fi
+UI_INNER_WIDTH=55
+
+ui_repeat() {
+    n=$2
+    out=
+    while [ "$n" -gt 0 ]; do
+        out="$out$1"
+        n=$((n - 1))
+    done
+    printf '%s' "$out"
+}
+
+ui_box() {
+    left=$(( (UI_INNER_WIDTH - ${#1}) / 2 ))
+    right=$(( UI_INNER_WIDTH - ${#1} - left ))
+    rule=$(ui_repeat = "$UI_INNER_WIDTH")
+    printf '
+%s/%s\
+' "$C_TITLE" "$rule"
+    printf '|%s%s%s|
+' "$(ui_repeat ' ' "$left")" "$1" "$(ui_repeat ' ' "$right")"
+    printf '\%s/%s
+' "$rule" "$C_RESET"
+}
+
+ui_info() {
+    printf '%s
+' "$1"
+}
+
+ui_ok() {
+    printf '%s%s%s
+' "$C_OK" "$1" "$C_RESET"
+}
+
+ui_warn() {
+    printf '%s%s%s
+' "$C_WARN" "$1" "$C_RESET"
+}
+
+ui_error() {
+    if [ -t 2 ]; then
+        printf '%sinstall.sh: %s%s
+' "$C_ERR" "$1" "$C_RESET" >&2
+    else
+        printf 'install.sh: %s
+' "$1" >&2
+    fi
+}
+
+ui_item() {
+    printf '  %s%s)%s %s
+' "$C_KEY" "$1" "$C_RESET" "$2"
+}
+
+ui_read() {
+    printf '%s>>%s %s ' "$C_KEY" "$C_RESET" "$1"
+    if ! read -r UI_ANSWER; then
+        printf '
+'
+        ui_error "input ended before an answer was given; nothing more was changed"
+        exit 1
+    fi
+}
+
+ui_choose() {
+    while :; do
+        ui_read "$1 [1-$2, Enter for $3]:"
+        case "$UI_ANSWER" in
+            "") UI_CHOICE=$3; return 0 ;;
+            0*|*[!0-9]*) ;;
+            *)
+                if [ "$UI_ANSWER" -le "$2" ]; then
+                    UI_CHOICE=$UI_ANSWER
+                    return 0
+                fi
+                ;;
+        esac
+        ui_warn "Enter a number from 1 to $2."
+    done
+}
+
+ui_number() {
+    while :; do
+        ui_read "$1 [$2-$3]:"
+        case "$UI_ANSWER" in
+            ""|0*|*[!0-9]*) ;;
+            *)
+                if [ "$UI_ANSWER" -ge "$2" ] && [ "$UI_ANSWER" -le "$3" ]; then
+                    UI_NUMBER=$UI_ANSWER
+                    return 0
+                fi
+                ;;
+        esac
+        ui_warn "Enter a number from $2 to $3."
+    done
+}
+
+ui_yes_no() {
+    case "$2" in
+        yes) hint="[Y/n]" ;;
+        no) hint="[y/N]" ;;
+        none) hint="[y/n]" ;;
+        *) ui_error "unhandled default answer '$2'"; exit 1 ;;
+    esac
+    while :; do
+        ui_read "$1 $hint:"
+        case "$UI_ANSWER" in
+            y|Y|yes|Yes|YES) UI_YES=yes; return 0 ;;
+            n|N|no|No|NO) UI_YES=no; return 0 ;;
+            "")
+                if [ "$2" != none ]; then
+                    UI_YES=$2
+                    return 0
+                fi
+                ;;
+        esac
+        ui_warn "Answer y or n."
+    done
+}
+
+backup_file() {
+    BACKUP_PATH="$1.$(date +%Y%m%d-%H%M%S).bak"
+    cp -p "$1" "$BACKUP_PATH" || {
+        ui_error "failed to back up $1 to $BACKUP_PATH; $1 was not changed"
+        exit 1
+    }
+    echo "install.sh: backed up $1 to $BACKUP_PATH"
+}
 
 usage() {
-    echo "Usage: $0 [--filament-service | --no-filament-service] [--update-manager | --no-update-manager] [--printer-data DIR] [--nginx-site FILE] [FIRMWARE_DIR]"
+    echo "Usage: $0 [--filament-service | --no-filament-service] [--update-manager | --no-update-manager] [--setup] [--printer-data DIR] [--nginx-site FILE] [FIRMWARE_DIR]"
 }
 
 COMPONENTS=
@@ -42,6 +191,7 @@ MOONRAKER_CHANGED=no
 TARGET_ARG=
 PRINTER_DATA_DIR=
 NGINX_SITE=/etc/nginx/sites-available/mainsail
+FORCE_SETUP=no
 while [ $# -gt 0 ]; do
     case "$1" in
         --filament-service)
@@ -55,6 +205,9 @@ while [ $# -gt 0 ]; do
             ;;
         --no-update-manager)
             UPDATE_ENTRY=no
+            ;;
+        --setup)
+            FORCE_SETUP=yes
             ;;
         --printer-data)
             if [ $# -lt 2 ]; then
@@ -121,18 +274,14 @@ if [ -z "$COMPONENTS" ]; then
         echo "install.sh: pass --filament-service or --no-filament-service when running non-interactively" >&2
         exit 1
     fi
-    echo "Choose what to install:"
-    echo "  1) core plugin only"
-    echo "  2) core plugin, filament service and web page"
-    printf "Selection [1 or 2, Enter for 2]: "
-    read -r answer
-    case "$answer" in
+    ui_box "Components"
+    ui_item 1 "Core plugin only"
+    ui_item 2 "Core plugin, filament service and web page"
+    ui_choose "Install" 2 2
+    case "$UI_CHOICE" in
         1) COMPONENTS=core ;;
-        2|"") COMPONENTS=service ;;
-        *)
-            echo "install.sh: no valid selection made, nothing installed" >&2
-            exit 1
-            ;;
+        2) COMPONENTS=service ;;
+        *) ui_error "unhandled selection $UI_CHOICE"; exit 1 ;;
     esac
 fi
 
@@ -202,17 +351,10 @@ if [ -z "$UPDATE_ENTRY" ]; then
         echo "install.sh: pass --update-manager or --no-update-manager when running non-interactively" >&2
         exit 1
     fi
-    echo "An update entry in moonraker.conf lets Mainsail's update screen update this plugin."
-    printf "Add the update entry? [Y/n]: "
-    read -r answer
-    case "$answer" in
-        ""|y|Y|yes|Yes|YES) UPDATE_ENTRY=yes ;;
-        n|N|no|No|NO) UPDATE_ENTRY=no ;;
-        *)
-            echo "install.sh: no valid answer given, nothing installed" >&2
-            exit 1
-            ;;
-    esac
+    ui_box "Update manager"
+    ui_info "An update entry in moonraker.conf lets Mainsail's update screen update this plugin."
+    ui_yes_no "Add the update entry?" yes
+    UPDATE_ENTRY=$UI_YES
 fi
 
 if [ "$UPDATE_ENTRY" = yes ]; then
@@ -319,12 +461,8 @@ write_update_entry() {
         fi
         return 0
     fi
-    backup="$MOONRAKER_CONF.$(date +%Y%m%d-%H%M%S).bak"
-    cp -p "$MOONRAKER_CONF" "$backup" || {
-        echo "install.sh: failed to back up $MOONRAKER_CONF to $backup; moonraker.conf was not changed" >&2
-        exit 1
-    }
-    echo "install.sh: backed up $MOONRAKER_CONF to $backup"
+    backup_file "$MOONRAKER_CONF"
+    backup=$BACKUP_PATH
     # managed_services accepts only the section's own name, klipper and
     # moonraker, separated by whitespace
     # (moonraker/components/update_manager/app_deploy.py:151-186).
@@ -462,10 +600,23 @@ def wait():
         time.sleep(1.0)
 
 
+def sections():
+    try:
+        settings = get("/printer/objects/query?configfile=settings")["status"][
+            "configfile"
+        ]["settings"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        fail("cannot read Klipper's loaded config from Moonraker at %s (%s)" % (base, e))
+    for name in settings:
+        print(name)
+
+
 if mode == "check":
     check()
 elif mode == "wait":
     wait()
+elif mode == "sections":
+    sections()
 else:
     fail("unhandled helper mode %r" % (mode,))
 MOONRAKER_PY
@@ -528,6 +679,175 @@ restart_services() {
         echo "install.sh: started $SERVICE_NAME; check it with: systemctl status $SERVICE_NAME"
     fi
 }
+
+setup_helper() {
+    "$PYTHON" "$SETUP_HELPER" "$@"
+}
+
+ask_setup_answers() {
+    ui_info "Pins and dock positions are left for you to fill in afterwards."
+    printf '\n'
+    ui_number "Number of tools" 1 99
+    TOOL_COUNT=$UI_NUMBER
+    CHOSEN=extruder
+    ui_info "T0 uses [extruder], the section with the extruder motor."
+    existing=$(setup_helper extruders "$CONFIG_DIR" $LOADED_ARGS) || exit 1
+    tool=1
+    while [ "$tool" -lt "$TOOL_COUNT" ]; do
+        suggestion=$(setup_helper suggest "$CONFIG_DIR" $LOADED_ARGS --chosen "$CHOSEN") || exit 1
+        printf '\n'
+        ui_info "Extruder section for T$tool:"
+        count=0
+        default=
+        offered=
+        for name in $existing; do
+            case ",$CHOSEN," in
+                *",$name,"*) continue ;;
+            esac
+            count=$((count + 1))
+            offered="$offered $name"
+            ui_item "$count" "[$name] (already in your config)"
+            if [ "$name" = "extruder$tool" ]; then
+                default=$count
+            fi
+        done
+        count=$((count + 1))
+        ui_item "$count" "New heater-only section [$suggestion]"
+        ui_choose "Section for T$tool" "$count" "${default:-$count}"
+        if [ "$UI_CHOICE" = "$count" ]; then
+            picked=$suggestion
+        else
+            set -- $offered
+            shift $((UI_CHOICE - 1))
+            picked=$1
+        fi
+        CHOSEN="$CHOSEN,$picked"
+        tool=$((tool + 1))
+    done
+    printf '\n'
+    ui_info "Either every dock has a presence sensor or none does."
+    ui_yes_no "Do the docks have presence sensors (detect_pin)?" none
+    DOCK_SENSORS=$UI_YES
+    ui_yes_no "Does the toolhead have a presence sensor (toolhead_detect_pin)?" none
+    TOOLHEAD_SENSOR=$UI_YES
+}
+
+write_setup_files() {
+    own_file="$CONFIG_DIR/hotendchanger.cfg"
+    printer_cfg="$CONFIG_DIR/printer.cfg"
+    config_tmp="$SETUP_TMP/hotendchanger.cfg"
+    printer_tmp="$SETUP_TMP/printer.cfg"
+    next_steps=$(setup_helper render "$CONFIG_DIR" $LOADED_ARGS \
+        --extruders "$CHOSEN" --dock-sensors "$DOCK_SENSORS" \
+        --toolhead-sensor "$TOOLHEAD_SENSOR" --output "$config_tmp") || exit 1
+    ui_box "Writing configuration"
+    if [ -e "$own_file" ]; then
+        backup_file "$own_file"
+    fi
+    cat "$config_tmp" > "$own_file" || {
+        ui_error "failed to write $own_file"
+        exit 1
+    }
+    ui_ok "Wrote $own_file"
+    setup_helper add-include "$printer_cfg" --output "$printer_tmp" && status=0 || status=$?
+    case "$status" in
+        "$INCLUDE_WRITTEN")
+            backup_file "$printer_cfg"
+            cat "$printer_tmp" > "$printer_cfg" || {
+                ui_error "failed to write $printer_cfg; restore it from $BACKUP_PATH"
+                exit 1
+            }
+            ui_ok "Added [include hotendchanger.cfg] to $printer_cfg"
+            ;;
+        "$INCLUDE_PRESENT")
+            ui_ok "$printer_cfg already includes hotendchanger.cfg"
+            ;;
+        *)
+            exit 1
+            ;;
+    esac
+    ui_box "Fill in before printing"
+    printf '%s\n' "$next_steps" | while IFS= read -r line; do
+        ui_info "$line"
+    done
+}
+
+run_setup() {
+    if [ -z "$PYTHON" ]; then
+        ui_warn "Configuration setup skipped: python3 not found. Install python3, then run: sh install.sh --setup"
+        return 0
+    fi
+    resolve_printer_data
+    CONFIG_DIR="$PRINTER_DATA_DIR/config"
+    SETUP_TMP=$(mktemp -d)
+    trap 'rm -rf "$SETUP_TMP"' EXIT
+    LOADED_ARGS=
+    if moonraker_helper sections > "$SETUP_TMP/loaded"; then
+        LOADED_ARGS="--loaded $SETUP_TMP/loaded"
+    else
+        ui_info "Reading the config files only, without Klipper's loaded config."
+    fi
+    found=$(setup_helper existing "$CONFIG_DIR" $LOADED_ARGS) && status=0 || status=$?
+    case "$status" in
+        "$SETUP_NONE")
+            ;;
+        "$SETUP_OWN_FILE")
+            if [ "$FORCE_SETUP" = no ]; then
+                ui_info "Configuration setup skipped: $found. To replace it, run: sh install.sh --setup"
+                rm -rf "$SETUP_TMP"
+                trap - EXIT
+                return 0
+            fi
+            ;;
+        "$SETUP_ELSEWHERE")
+            if [ "$FORCE_SETUP" = yes ]; then
+                ui_error "hotendchanger sections already exist outside hotendchanger.cfg:"
+                printf '%s\n' "$found" >&2
+                ui_error "move them into hotendchanger.cfg or remove them, then rerun with --setup; setup writes them to hotendchanger.cfg and would define them twice"
+                exit 1
+            fi
+            ui_info "Configuration setup skipped: hotendchanger is already configured ($(printf '%s' "$found" | head -n 1))."
+            rm -rf "$SETUP_TMP"
+            trap - EXIT
+            return 0
+            ;;
+        *)
+            exit 1
+            ;;
+    esac
+    if [ ! -t 0 ]; then
+        ui_info "Configuration setup skipped: it needs a terminal. Run it with: sh install.sh --setup"
+        rm -rf "$SETUP_TMP"
+        trap - EXIT
+        return 0
+    fi
+    ui_box "Hotendchanger setup"
+    case "$status" in
+        "$SETUP_NONE")
+            ui_info "No hotendchanger configuration was found, so this setup writes a starter hotendchanger.cfg."
+            ;;
+        "$SETUP_OWN_FILE")
+            ui_warn "$found."
+            ui_yes_no "Replace it? A dated backup of the current file is kept." no
+            if [ "$UI_YES" = no ]; then
+                ui_info "Configuration setup skipped: hotendchanger.cfg was left unchanged."
+                rm -rf "$SETUP_TMP"
+                trap - EXIT
+                return 0
+            fi
+            ;;
+        *)
+            ui_error "unhandled setup state $status"
+            exit 1
+            ;;
+    esac
+    ask_setup_answers
+    write_setup_files
+    rm -rf "$SETUP_TMP"
+    trap - EXIT
+}
+
+run_setup
 
 if [ "$COMPONENTS" = core ]; then
     write_update_entry

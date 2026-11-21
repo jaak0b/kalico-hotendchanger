@@ -1,0 +1,10 @@
+# The setup's output for one tool, left unfilled: the config loads, and a
+# tool change fails on the blank dock position the setup tells the user to
+# fill in, as a command error rather than a shutdown. A command error ends
+# the batch run with a failure, which SHOULD_FAIL expects.
+CONFIG printer.cfg
+DICTIONARY linuxprocess.dict
+SHOULD_FAIL
+
+G28
+T0
