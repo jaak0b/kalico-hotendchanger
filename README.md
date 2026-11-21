@@ -331,19 +331,9 @@ Check the hotend by hand, then run `INITIALIZE_HOTENDCHANGER` to clear it.
 ### Nozzle offsets
 
 Measure the offsets with
-[eddy_tool_calibration](https://github.com/jaak0b/kalico-eddy-offset-calibration).
-Its `EDDY_CALIBRATE_OFFSET` runs your `apply_offsets_gcode` template with
-the measured values. Point that template at this plugin's
-`SET_TOOL_OFFSET`:
-
-```
-[eddy_tool_calibration]
-apply_offsets_gcode:
-    SET_TOOL_OFFSET T={tool} X={offset_x} Y={offset_y} Z={offset_z}
-```
-
-Add `SAVE=1` to stage the values for `SAVE_CONFIG`. See that plugin's
-README for its own setup and its Z calibration.
+[eddy_tool_calibration](https://github.com/jaak0b/kalico-eddy-offset-calibration)
+and follow its README for the setup. This plugin receives the values
+through [`SET_TOOL_OFFSET`](#commands).
 
 ## Commands
 
