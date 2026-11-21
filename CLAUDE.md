@@ -55,10 +55,11 @@ Numbered for unambiguous reference; do not cite rule numbers in shipped source o
    imports nothing from klippy; the plugin class is the only klippy-facing layer. New modes or
    hardware variants are their own modules behind clear interfaces.
 
-4. **NO AI attribution in git/GitHub; no AI process residue in any output.** A
-   `Co-Authored-By: Claude <...>` trailer NEVER allowed on commits. No AI attribution anywhere.
-   Commit messages: a single short sentence. Shipped output of every kind (source code,
-   comments, docstrings, docs, UI text, error messages, commit messages) must never reference
+4. **AI co-authorship on commits is allowed; no AI process residue in shipped output.** A
+   `Co-Authored-By: Claude <...>` trailer is allowed on commits (owner decision, 2026-11-21).
+   Commit messages: a single short sentence, plus that trailer. Shipped output of every kind
+   (source code, comments, docstrings, docs, UI text, error messages, and the commit message
+   sentence itself) must never reference
    the AI-assisted process behind it: no mention of these rules or their numbers ("per rule
    2"), CLAUDE.md, skills, agents, subagents, prompts, reviews by agents, or session context.
    Rationale is expressed in plain domain terms instead. The reader of any shipped file must
