@@ -2,13 +2,18 @@
 
 The filament service install also serves a page at
 `http://<printer>/hotendchanger/` and adds a Hotendchanger entry to
-Mainsail's sidebar. Access and the chip meanings are in the
-[README](../README.md#web-page-and-filament-library).
+Mainsail's sidebar. Reload Mainsail once after installing to make the entry
+appear.
+
+The page has no login. Add the network you browse from to `trusted_clients`
+in the `[authorization]` section of `moonraker.conf`, because Moonraker
+refuses the page from any other network.
 
 ## Layout
 
 - The connection state of Moonraker, Klipper and the filament service.
-- One card per configured tool. The header holds the tool name, the
+- One card per configured tool, showing the nozzle temperature, the loaded
+  filament and its color. The header holds the tool name, the
   presence chip and the nozzle temperature as current / target (to
   0.1 °C). Below it: the loaded filament with a color dot, a filament
   selector, and the buttons **Heat** (to the filament's nozzle
@@ -39,20 +44,20 @@ menu.
 
 ## Presence chip
 
-The chip shows the plugin's `presence` value for the tool; the page does
-not derive it. The rules are in
-[how-it-works.md](how-it-works.md#tool-presence).
+The chip in the card header shows where the plugin sees the tool. It shows
+the plugin's `presence` value for the tool; the page does not derive it. The
+exact rules are in [how-it-works.md](how-it-works.md#tool-presence).
 
-| Chip | Color | Presence |
-| --- | --- | --- |
-| Mounted | Primary | `mounted` |
-| Docked | Green | `docked` |
-| Not mounted | Gray | `not_mounted` |
-| Missing | Red | `missing` |
-| Conflict | Red | `conflict` |
-| Changing | Blue | `changing` |
-| Unknown | Yellow | `unknown` |
-| The value itself | Red | Any other value, including `invalid` or a missing value. |
+| Chip | Color | Presence | Meaning |
+| --- | --- | --- | --- |
+| Mounted | Primary | `mounted` | The tool is on the carriage. |
+| Docked | Green | `docked` | Its dock sensor sees it in the dock. |
+| Not mounted | Gray | `not_mounted` | It is not on the carriage. It has no dock sensor to confirm it is in the dock. |
+| Missing | Red | `missing` | Its dock sensor is empty and the tool is not on the carriage. |
+| Conflict | Red | `conflict` | The tool is the active tool, but its dock sensor reports it docked. Check the hotend, then run `INITIALIZE_HOTENDCHANGER`. |
+| Changing | Blue | `changing` | A tool change is running and the tool is not in its dock. |
+| Unknown | Yellow | `unknown` | A hotend may be on the carriage and the plugin does not know which. Run `INITIALIZE_HOTENDCHANGER`. |
+| The value itself | Red | Any other value, including `invalid` or a missing value. | An unexpected value; the cause is in `klippy.log`. |
 
 ## Offline assets
 

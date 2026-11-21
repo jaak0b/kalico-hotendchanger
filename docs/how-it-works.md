@@ -181,9 +181,72 @@ keep their value. With `SAVE=1` the values are written to the
 `gcode_x_offset`, `gcode_y_offset` and `gcode_z_offset` options of that
 tool's section on the next `SAVE_CONFIG`.
 
+## Commands in detail
+
+The command table is in the [README](../README.md#commands).
+
+### Tool change commands
+
+`T<n>` changes to tool `n`: it docks the mounted hotend, picks up the new
+one, waits for its target temperature and applies its offset. The steps are
+in [Tool change sequence](#tool-change-sequence).
+
+`UNSELECT_TOOL` docks the mounted hotend and leaves the toolhead empty. With
+no tool mounted it reports that and does nothing, so `PRINT_END` can call it
+unconditionally. It is allowed during a print.
+
+### SET_TOOL_OFFSET
+
+Sets a tool's gcode offset. Axes left out keep their value. The offset of
+the active tool applies immediately. `SAVE=1` stages the values for
+`SAVE_CONFIG`; see [Offset handling](#offset-handling).
+
+### HOTENDCHANGER_STATUS
+
+Prints labeled rows:
+
+- the active tool, the detected tool and the state;
+- each detect pin reading and each tool's presence;
+- the toolhead pin reading;
+- the extruder stepper's motion queue (`none` when detached);
+- each tool's offset and extruder section.
+
+### INITIALIZE_HOTENDCHANGER
+
+Reads the sensors again and resolves the mounted tool. It clears the
+`error` state.
+
+- Without dock sensors it resets the state to unknown, or with `T=<n>`
+  declares that tool mounted and applies its offset.
+- `T=` is refused when dock sensors are configured.
+- It is refused during a tool change.
+
+Run it after moving or servicing a hotend by hand during a print. While no
+print is running, the plugin follows a manual swap by itself, see
+[Tool loss protection and manual swaps](#tool-loss-protection-and-manual-swaps).
+
+### Filament commands
+
+All filament commands need the filament service. If it is not connected,
+the command fails with an error naming the unit to check.
+
+- `HOTENDCHANGER_FILAMENT_ADD` adds a filament to the library. Names are
+  unique, ignoring case. Quote names with spaces.
+- `HOTENDCHANGER_FILAMENT_ASSIGN T=<n> NAME="<name>" COLOR=<RRGGBB>`
+  records that tool `n` holds this filament in this color. `COLOR` is
+  required: six hex digits, with or without `#`.
+- `HOTENDCHANGER_FILAMENT_ASSIGN T=<n> CLEAR=1` records that tool `n` holds
+  no filament.
+- `HOTENDCHANGER_FILAMENT_COLOR` changes the color of the filament tool `n`
+  holds. It is refused for a tool without a filament.
+- `HOTENDCHANGER_FILAMENT_LIST` prints each tool's filament and color, then
+  the library with material and nozzle temperature.
+
 ## Status fields
 
-Macros and the web page read `printer.hotendchanger`:
+Macros and the web page read `printer.hotendchanger`, for example
+`printer.hotendchanger.active_tool` or
+`printer.hotendchanger.tools.T0.presence`:
 
 | Field | Value |
 | --- | --- |

@@ -44,6 +44,7 @@ same when it cannot reach Moonraker.
 ## Stock Klipper
 
 On stock Klipper the symlinks are untracked files, so git and Moonraker's
+update manager report the Klipper checkout as dirty.
 
 ## Flags
 
@@ -97,3 +98,17 @@ The setup is skipped when `hotendchanger.cfg` exists, when a
 its included files or the config Klipper has loaded, and when the script
 runs non-interactively. `--setup` refuses while hotendchanger sections exist
 in any file other than `hotendchanger.cfg`.
+
+## Uninstalling
+
+1. Remove `[include hotendchanger.cfg]` from `printer.cfg`, and
+   `hotendchanger.cfg` from the config directory.
+2. Delete the `hotendchanger.py` and `hotendchanger_tool.py` symlinks from
+   `klippy/plugins/` (Kalico) or `klippy/extras/` (Klipper).
+3. Delete the `[update_manager hotendchanger]` or
+   `[update_manager hotendchanger-filament]` section from `moonraker.conf`.
+4. With the filament service: run `sudo systemctl disable --now hotendchanger-filament`,
+   delete `/etc/systemd/system/hotendchanger-filament.service`, remove the
+   `hotendchanger-filament` line from `moonraker.asvc`, and remove the web
+   page as described in [web-page.md](web-page.md#removing-the-page).
+5. Restart Moonraker and Klipper.

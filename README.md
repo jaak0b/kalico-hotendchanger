@@ -263,60 +263,32 @@ through [`SET_TOOL_OFFSET`](#commands).
 
 | Command | What it does |
 | --- | --- |
-| `T<n>` | Change to tool `n`. Docks the mounted hotend, picks up the new one, waits for its target temperature and applies its offset. |
-| `UNSELECT_TOOL` | Dock the mounted hotend and leave the toolhead empty. With no tool mounted it reports that and does nothing, so `PRINT_END` can call it unconditionally. Allowed during a print. |
-| `SET_TOOL_OFFSET T=<n> [X=<x>] [Y=<y>] [Z=<z>] [SAVE=1]` | Set a tool's gcode offset. Axes left out keep their value. An active tool's offset applies immediately. `SAVE=1` stages the values for `SAVE_CONFIG`. |
-| `HOTENDCHANGER_STATUS` | Print labeled rows: active tool, detected tool, state, each detect pin reading, each tool's presence, the toolhead pin reading, the extruder stepper's motion queue (`none` when detached), and each tool's offset and extruder section. |
-| `INITIALIZE_HOTENDCHANGER [T=<n>]` | Read the sensors again and resolve the mounted tool. Clears the `error` state. Without dock sensors it resets the state to unknown, or with `T=<n>` declares that tool mounted and applies its offset. `T=` is refused when dock sensors are configured. Refused during a tool change. |
-| `HOTENDCHANGER_FILAMENT_ADD NAME="<name>" MATERIAL=<material> NOZZLE_TEMP=<temp>` | Add a filament to the library. Names are unique, ignoring case. Quote names with spaces. |
-| `HOTENDCHANGER_FILAMENT_ASSIGN T=<n> NAME="<name>" COLOR=<RRGGBB>` | Record that tool `n` holds this filament in this color. `COLOR` is required: six hex digits, with or without `#`. |
+| `T<n>` | Change to tool `n`. |
+| `UNSELECT_TOOL` | Dock the mounted hotend and leave the toolhead empty. |
+| `SET_TOOL_OFFSET T=<n> [X=<x>] [Y=<y>] [Z=<z>] [SAVE=1]` | Set a tool's gcode offset. |
+| `HOTENDCHANGER_STATUS` | Print the plugin state and sensor readings as labeled rows. |
+| `INITIALIZE_HOTENDCHANGER [T=<n>]` | Resolve the mounted tool and clear the `error` state. |
+| `HOTENDCHANGER_FILAMENT_ADD NAME="<name>" MATERIAL=<material> NOZZLE_TEMP=<temp>` | Add a filament to the library. |
+| `HOTENDCHANGER_FILAMENT_ASSIGN T=<n> NAME="<name>" COLOR=<RRGGBB>` | Record the filament and color tool `n` holds. |
 | `HOTENDCHANGER_FILAMENT_ASSIGN T=<n> CLEAR=1` | Record that tool `n` holds no filament. |
-| `HOTENDCHANGER_FILAMENT_COLOR T=<n> COLOR=<RRGGBB>` | Change the color of the filament tool `n` holds. Refused for a tool without a filament. |
-| `HOTENDCHANGER_FILAMENT_LIST` | Print each tool's filament and color, then the library with material and nozzle temperature. |
+| `HOTENDCHANGER_FILAMENT_COLOR T=<n> COLOR=<RRGGBB>` | Change the color of tool `n`'s filament. |
+| `HOTENDCHANGER_FILAMENT_LIST` | Print each tool's filament, then the library. |
 
-Run `INITIALIZE_HOTENDCHANGER` after moving or servicing a hotend by hand
-during a print. While no print is running, the plugin follows a manual
-swap by itself.
-
-The filament commands need the filament service. If it is not connected,
-the command fails with an error naming the unit to check.
-
-Macros can read `printer.hotendchanger`, for example
-`printer.hotendchanger.active_tool` or
-`printer.hotendchanger.tools.T0.presence`. All fields are listed in
-[docs/how-it-works.md](docs/how-it-works.md#status-fields).
+Per-command behavior, refusals and the fields macros can read from
+`printer.hotendchanger` are in
+[docs/how-it-works.md](docs/how-it-works.md#commands-in-detail).
 
 ## Web page and filament library
 
-The filament service records which filament each tool holds. The web page
-at `http://<printer>/hotendchanger/` shows one card per tool and the
-filament library. Open it from the Hotendchanger entry in Mainsail's
-sidebar; reload Mainsail once after installing to make the entry appear.
+Open the page from the Hotendchanger entry in Mainsail's sidebar; reload
+Mainsail once after installing to make the entry appear. It is served at
+`http://<printer>/hotendchanger/`.
 
 **Add the network you browse from to `trusted_clients` in the
 `[authorization]` section of `moonraker.conf`.** The page has no login, so
 Moonraker refuses it from any other network.
 
-Each card shows the nozzle temperature, the loaded filament and its color,
-and the buttons **Heat**, **Off** and **Mount** (`T<n>`), or **Dock**
-(`UNSELECT_TOOL`) on the mounted tool. Mount and Dock are disabled while a
-print is running or paused and during a tool change. The chip in the card
-header shows where the plugin sees the tool:
-
-| Chip | Meaning |
-| --- | --- |
-| Mounted | The tool is on the carriage. |
-| Docked | Its dock sensor sees it in the dock. |
-| Not mounted | It is not on the carriage. It has no dock sensor to confirm it is in the dock. |
-| Missing | Its dock sensor is empty and the tool is not on the carriage. |
-| Conflict | The tool is the active tool, but its dock sensor reports it docked. Check the hotend, then run `INITIALIZE_HOTENDCHANGER`. |
-| Changing | A tool change is running and the tool is not in its dock. |
-| Unknown | A hotend may be on the carriage and the plugin does not know which. Run `INITIALIZE_HOTENDCHANGER`. |
-| Any other text | An unexpected value; the cause is in `klippy.log`. |
-
-The exact presence rules are in
-[docs/how-it-works.md](docs/how-it-works.md#tool-presence). Page details
-and removal are in [docs/web-page.md](docs/web-page.md).
+Cards, buttons and presence chips: [docs/web-page.md](docs/web-page.md).
 
 ## OrcaSlicer filament sync
 
@@ -340,12 +312,9 @@ Limits:
   Generic profile.
 - Colors are set exactly.
 - Overwriting does not remove extra filament slots already in the project.
-- The experimental setting applies to every printer in OrcaSlicer, not per
-  printer. With it on, Print plate opens the "Send print job" window for
-  every printer, and that window refuses a printer whose profile is based
-  on a vendor printer model as incompatible. For such a printer, switch the
-  setting off while printing to it, or export the G-code and upload it
-  through that printer's own web interface.
+- The experimental setting applies to every printer in OrcaSlicer and can
+  block sending to printers whose profile is based on a vendor model, see
+  [docs/filament-service-api.md](docs/filament-service-api.md#orcaslicer-experimental-setting).
 
 ## Updating, uninstalling, troubleshooting
 
@@ -353,19 +322,7 @@ Limits:
 Without it, run `git pull` in `~/kalico-hotendchanger` and restart Klipper
 (and `hotendchanger-filament`, if installed).
 
-**Uninstalling.**
-
-1. Remove `[include hotendchanger.cfg]` from `printer.cfg`, and
-   `hotendchanger.cfg` from the config directory.
-2. Delete the `hotendchanger.py` and `hotendchanger_tool.py` symlinks from
-   `klippy/plugins/` (Kalico) or `klippy/extras/` (Klipper).
-3. Delete the `[update_manager hotendchanger]` or
-   `[update_manager hotendchanger-filament]` section from `moonraker.conf`.
-4. With the filament service: run `sudo systemctl disable --now hotendchanger-filament`,
-   delete `/etc/systemd/system/hotendchanger-filament.service`, remove the
-   `hotendchanger-filament` line from `moonraker.asvc`, and remove the web
-   page as described in [docs/web-page.md](docs/web-page.md#removing-the-page).
-5. Restart Moonraker and Klipper.
+**Uninstalling.** See [docs/installer.md](docs/installer.md#uninstalling).
 
 **Troubleshooting.**
 
@@ -387,11 +344,11 @@ Without it, run `git pull` in `~/kalico-hotendchanger` and restart Klipper
 ## Further documentation
 
 - [How it works](docs/how-it-works.md): tool change sequence, states, detect
-  pin rules, tool presence, tool loss protection, offset handling, status
-  fields, template context and limitations.
+  pin rules, tool presence, tool loss protection, offset handling, commands
+  in detail, status fields, template context and limitations.
 - [Filament service and API](docs/filament-service-api.md): service
-  architecture, console command forwarding and the Moonraker API for other
-  programs.
+  architecture, console command forwarding, the Moonraker API for other
+  programs and the OrcaSlicer experimental setting.
 - [Web page](docs/web-page.md): page layout, chips, what the installer
   changes in nginx and Mainsail, and removal.
 - [Design document](docs/design.md): architecture and the firmware surfaces

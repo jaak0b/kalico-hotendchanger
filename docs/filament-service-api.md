@@ -116,3 +116,14 @@ changes, the service sends the agent event `library_changed`. Moonraker
 delivers it to other clients as `notify_agent_event` with
 `{"agent": "hotendchanger", "event": "library_changed"}`. Reload
 `tools.list` and `filaments.list` when it arrives.
+
+## OrcaSlicer experimental setting
+
+Filament sync needs "Use printer agents instead of print hosts" in
+OrcaSlicer's Preferences, under Developer, then Experimental Features. The
+setting applies to every printer in OrcaSlicer, not per printer. With it
+on, Print plate opens the "Send print job" window for every printer, and
+that window refuses a printer whose profile is based on a vendor printer
+model as incompatible. For such a printer, switch the setting off while
+printing to it, or export the G-code and upload it through that printer's
+own web interface.
